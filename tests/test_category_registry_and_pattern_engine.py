@@ -240,7 +240,7 @@ def test_session_context_default_role():
 def test_session_context_is_admin():
     ctx = SessionContext()
     assert not ctx.is_admin()
-    ctx.set_role(UserRole.ADMIN)
+    ctx.set_role(UserRole.SUPER_ADMIN)
     assert ctx.is_admin()
 
 
@@ -257,8 +257,8 @@ def test_session_context_check_access_public_view():
 
 def test_session_context_set_role():
     ctx = SessionContext()
-    ctx.set_role(UserRole.ESTIMATOR)
-    assert ctx.role == UserRole.ESTIMATOR
+    ctx.set_role(UserRole.OPERATIONAL_ADMIN)
+    assert ctx.role == UserRole.OPERATIONAL_ADMIN
 
 
 def test_session_context_admin_only_views():

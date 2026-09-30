@@ -41,6 +41,8 @@ def test_nav_groups_exact():
         ("COMMERCIAL", ("rates", "boq", "estimate")),
         ("OUTPUT & EXPORT", ("excel", "corpdoc", "valuations")),
         ("CONSTITUENTS", ("mix_design",)),
+        ("ADMINISTRATION", ("admin_setup", "global_policy_editor",
+                            "security_policy")),
     ]
 
 
@@ -291,9 +293,12 @@ def test_sidebar_click_moves_highlight_with_panel():
         pytest.skip(f"QSApp needs a display: {exc}")
     try:
         app = app_holder["app"]
-        keys = [key for _group, items in views.NAV_GROUPS
-                for key, _label, _kind in items]
-        assert set(keys) == set(app._nav_buttons)
+        all_keys = [key for _group, items in views.NAV_GROUPS
+                    for key, _label, _kind in items]
+        assert set(all_keys) == set(app._nav_buttons)
+        # ADMINISTRATION is hidden for a clerk, so it is not clicked here.
+        keys = [key for key in all_keys
+                if key not in views.ADMIN_VIEW_KEYS]
         for key in keys:
             app._nav_buttons[key].invoke()
             app.update_idletasks()
@@ -325,9 +330,42 @@ def test_sidebar_all_routes_mapped_at_short_height():
         app.update()
         unmapped = [key for key, button in app._nav_buttons.items()
                     if not button.winfo_ismapped()]
-        assert unmapped == []
+        # Only the restricted ADMINISTRATION routes stay unmapped: they
+        # are hidden until the session unlocks (least privilege).
+        assert sorted(unmapped) == sorted(views.ADMIN_VIEW_KEYS)
         app._nav_buttons["valuations"].invoke()
         app.update_idletasks()
         assert app.active_route_key == "valuations"
+    finally:
+        app.destroy()
+
+
+def test_administration_group_hidden_until_unlock():
+    """Least privilege: the admin surface is invisible until Tier 1/2."""
+    from qs_engine.core.security import SessionContext, UserRole
+    from qs_engine.ui.views import QSApp, admin_nav_visible
+    try:
+        app = QSApp()
+    except Exception as exc:
+        pytest.skip(f"QSApp needs a display: {exc}")
+    try:
+        app.security = SessionContext()          # SITE_CLERK
+        app._sync_admin_nav()
+        assert admin_nav_visible(app.security) is False
+        assert not app._nav_buttons["admin_setup"].winfo_ismapped()
+        # Blocked navigation surfaces an explicit, non-blocking refusal.
+        app.show("security_policy")
+        app.update_idletasks()
+        assert "SUPER_ADMIN" in getattr(app, "_toast_text", "")
+        assert app._current != "security_policy"
+        # Owner tier reveals the group and the Tier 2 route opens.
+        app.security.set_role(UserRole.SUPER_ADMIN)
+        app._sync_admin_nav()
+        app.update_idletasks()
+        assert admin_nav_visible(app.security) is True
+        assert app._nav_buttons["admin_setup"].winfo_ismapped()
+        app.show("admin_setup")
+        app.update_idletasks()
+        assert app._current == "admin_setup"
     finally:
         app.destroy()

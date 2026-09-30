@@ -159,6 +159,7 @@ def test_nav_and_pages_unchanged():
         "earthworks", "finishes", "materials", "labour_plant",
         "logistics", "reconciliation", "rates", "boq", "estimate",
         "excel", "corpdoc", "valuations", "mix_design",
+        "admin_setup", "global_policy_editor", "security_policy",
     }
     assert set(views.PANEL_SPECS) == {
         "project", "concrete", "masonry", "earthworks", "finishes",

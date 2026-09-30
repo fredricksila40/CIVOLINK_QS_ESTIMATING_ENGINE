@@ -1,13 +1,25 @@
-"""Two-tier security, RBAC, and administrative access control (Phase 6).
+"""Two-tier security, RBAC, and owner-controlled access (Phase 6).
 
-Role model: SITE_CLERK, ESTIMATOR, ADMIN. Default active session is
-SITE_CLERK. Administrative tooling is gated behind an operational PIN
-and a Master Recovery Key lockout-prevention system.
+Roles, least privilege first:
+
+* ``SITE_CLERK`` - default session: take-off, mix lookups, read-only rates.
+* ``OPERATIONAL_ADMIN`` - daily administration (rate updates, GL mapping,
+  support desk). Unlocked with the Tier 1 operational PIN.
+* ``SUPER_ADMIN`` - the System Owner: master-key recovery, PIN rotation,
+  security policy. Reachable only with the Master Recovery Key.
+
+Tier 1 (operational PIN, 6-12 digits) opens the daily administration
+views but can NEVER rotate a PIN or change a security parameter.
+Tier 2 (Master Recovery Key ``CVLK-XXXX-XXXX-XXXX``, released by the
+System Owner through a signed ``master_admin.lic``) is the only path to
+PIN rotation and security policy. Five consecutive PIN failures lock the
+operational tier out for five minutes; the owner key clears the lockout.
 """
 
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -20,17 +32,29 @@ from ..core.errors import ValidationError
 
 
 class UserRole(Enum):
+    """Session roles, ordered by privilege."""
+
     SITE_CLERK = "SITE_CLERK"
-    ESTIMATOR = "ESTIMATOR"
-    ADMIN = "ADMIN"
+    OPERATIONAL_ADMIN = "OPERATIONAL_ADMIN"
+    SUPER_ADMIN = "SUPER_ADMIN"
 
 
 DEFAULT_ROLE = UserRole.SITE_CLERK
 
+#: Roles that satisfy ``is_admin()`` - Tier 1 (operational) and above.
+ADMIN_ROLES = frozenset({UserRole.OPERATIONAL_ADMIN, UserRole.SUPER_ADMIN})
+
 #: Operational PIN: 6-12 digit numeric string.
 PIN_MIN_LEN = 6
 PIN_MAX_LEN = 12
-PIN_RE = __import__("re").compile(r"^\d{" + f"{PIN_MIN_LEN},{PIN_MAX_LEN}" + r"}$")
+PIN_RE = re.compile(r"^\d{" + f"{PIN_MIN_LEN},{PIN_MAX_LEN}" + r"}$")
+
+#: Master Recovery Key issued by the System Owner: CVLK-XXXX-XXXX-XXXX.
+MASTER_KEY_PREFIX = "CVLK"
+MASTER_KEY_RE = re.compile(r"^CVLK-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$")
+
+#: Support & helpdesk address configured in the administration views.
+SUPPORT_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
 #: Number of consecutive failed PIN attempts before lockout.
 PIN_LOCKOUT_THRESHOLD = 5
@@ -74,15 +98,31 @@ class RolePermission:
     allowed: bool
 
 
-#: Views restricted to ADMIN only.
+#: Tier 1 views - daily administration, unlocked by the operational PIN.
 ADMIN_ONLY_VIEWS = frozenset({"admin_setup", "global_policy_editor"})
+#: Tier 2 views - security policy; the Master Recovery Key is mandatory.
+SUPER_ADMIN_ONLY_VIEWS = frozenset({"security_policy"})
+
+
+def _canonical_license_body(payload: Mapping) -> bytes:
+    """Canonical bytes the System Owner signs in master_admin.lic.
+
+    Key order is fixed and the ``signature`` field itself is excluded, so
+    re-serialising the file cannot change what was signed.
+    """
+    body = {key: value for key, value in payload.items()
+            if key != "signature"}
+    return json.dumps(body, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
 
 
 class SessionContext:
-    """Active session security context.
+    """Active session security context (two-tier, least privilege).
 
-    Tracks the current role, failed PIN attempts, lockout state,
-    and provides route-guarding checks. Always starts as SITE_CLERK.
+    Tracks the active role, failed PIN attempts, lockout state, the
+    Master Recovery Key, and the configured support desk. Sessions start
+    as SITE_CLERK; the operational PIN promotes to OPERATIONAL_ADMIN and
+    the owner key promotes to SUPER_ADMIN.
     """
 
     def __init__(self, role: UserRole = DEFAULT_ROLE):
@@ -92,6 +132,7 @@ class SessionContext:
         self._operational_pin_hash: Optional[str] = None
         self._operational_pin_salt: Optional[str] = None
         self._master_recovery_key: Optional[str] = None
+        self._support_email: Optional[str] = None
         self._load_config()
 
     # -- configuration persistence -----------------------------------------
@@ -107,6 +148,10 @@ class SessionContext:
         self._operational_pin_hash = payload.get("operational_pin_hash")
         self._operational_pin_salt = payload.get("operational_pin_salt")
         self._master_recovery_key = payload.get("master_recovery_key")
+        system = payload.get("system")
+        if isinstance(system, Mapping):
+            email = str(system.get("support_email", "") or "").strip()
+            self._support_email = email or None
         self._failed_pin_attempts = payload.get("failed_pin_attempts", 0)
         lock_at = payload.get("lockout_until")
         if lock_at is not None:
@@ -125,6 +170,8 @@ class SessionContext:
                 payload["operational_pin_salt"] = self._operational_pin_salt
             if self._master_recovery_key is not None:
                 payload["master_recovery_key"] = self._master_recovery_key
+            if self._support_email:
+                payload["system"] = {"support_email": self._support_email}
             payload["failed_pin_attempts"] = self._failed_pin_attempts
             if self._lockout_until is not None:
                 payload["lockout_until"] = self._lockout_until
@@ -137,15 +184,39 @@ class SessionContext:
     # -- operational PIN -----------------------------------------------------
 
     def set_operational_pin(self, pin: str) -> None:
-        """Set or update the operational PIN (requires non-empty pin)."""
+        """Set the operational PIN (first-time setup only).
+
+        Rotating an existing PIN is a security-policy change and MUST go
+        through :meth:`reset_pin_with_recovery` with the Master Recovery
+        Key - Tier 1 can never rewrite its own credential.
+        """
+        if self._operational_pin_hash is not None:
+            raise ValidationError(
+                "Operational PIN rotation requires the Master Recovery Key "
+                f"({MASTER_KEY_PREFIX}-XXXX-XXXX-XXXX)")
+        self._store_pin(pin)
+
+    def _store_pin(self, pin: str) -> None:
+        """Validate and persist a PIN hash (first set or owner rotation)."""
         pin = pin.strip()
         if not PIN_RE.match(pin):
             raise ValidationError(
                 f"Operational PIN must be {PIN_MIN_LEN}-{PIN_MAX_LEN} digits")
-        pin_hash, salt, iterations = hash_pin(pin)
+        pin_hash, salt, _iterations = hash_pin(pin)
         self._operational_pin_hash = pin_hash
         self._operational_pin_salt = salt
         self._save_config()
+
+    def unlock_with_pin(self, pin: str) -> UserRole:
+        """Tier 1 unlock: verify the PIN and promote to OPERATIONAL_ADMIN.
+
+        Lockout throttling applies exactly as in
+        :meth:`verify_operational_pin`. Tier 1 opens the daily
+        administration views only - never PIN changes or security policy.
+        """
+        self.verify_operational_pin(pin)
+        self.set_role(UserRole.OPERATIONAL_ADMIN)
+        return self._role
 
     def verify_operational_pin(self, pin: str) -> bool:
         """Verify the operational PIN. Enforces lockout throttling."""
@@ -186,11 +257,13 @@ class SessionContext:
     # -- master recovery key -------------------------------------------------
 
     def load_master_recovery_key(self, lic_path: Path = MASTER_ADMIN_LIC_PATH) -> bool:
-        """Scan for master_admin.lic at startup.
+        """Scan for master_admin.lic at startup and adopt its owner key.
 
-        If the signed license file exists and is valid, resets failed
-        attempt counters and allows establishing a new PIN. Returns
-        True when a valid license was found and processed.
+        The System Owner's license carries the Master Recovery Key plus an
+        Ed25519 signature over its canonical body. An unsigned, tampered,
+        or malformed file is refused (fail closed). On success the failed
+        attempt counters and any lockout are cleared, so the owner can
+        rotate the PIN.
         """
         if not lic_path.exists():
             return False
@@ -198,29 +271,45 @@ class SessionContext:
             payload = json.loads(lic_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return False
-        sig = payload.get("signature")
-        if not sig or not isinstance(sig, str):
+        if not isinstance(payload, Mapping):
             return False
         master_key = payload.get("master_key")
-        if not master_key or not isinstance(master_key, str):
+        signature = payload.get("signature")
+        public_key = payload.get("public_key")
+        if not all(isinstance(value, str) and value.strip()
+                   for value in (master_key, signature, public_key)):
             return False
-        # Validate signature (simplified: non-empty signature + key).
-        self._master_recovery_key = master_key
+        if not MASTER_KEY_RE.match(master_key.strip()):
+            return False
+        from qs_engine.licensing.provider import verify_signature
+        if not verify_signature(public_key,
+                                _canonical_license_body(payload),
+                                signature):
+            return False
+        self._master_recovery_key = master_key.strip()
         self._failed_pin_attempts = 0
         self._lockout_until = None
         self._save_config()
         return True
 
     def reset_pin_with_recovery(self, master_key: str, new_pin: str) -> None:
-        """Reset operational PIN using the Master Recovery Key.
+        """Tier 2 owner reset: rotate the operational PIN with the key.
 
-        Requires both the current operational PIN AND the Master Recovery Key.
+        Requires the Master Recovery Key adopted from a signed
+        master_admin.lic. A successful reset promotes the session to
+        SUPER_ADMIN - Tier 1 alone can never rotate the credential.
         """
         if self._master_recovery_key is None:
             raise ValidationError("No master recovery key configured")
-        if master_key.strip() != self._master_recovery_key.strip():
+        key = str(master_key or "").strip()
+        if not MASTER_KEY_RE.match(key):
+            raise ValidationError(
+                "Master Recovery Key must look like "
+                f"{MASTER_KEY_PREFIX}-XXXX-XXXX-XXXX")
+        if key != self._master_recovery_key.strip():
             raise ValidationError("Invalid master recovery key")
-        self.set_operational_pin(new_pin)
+        self._store_pin(new_pin)
+        self.set_role(UserRole.SUPER_ADMIN)
 
     # -- role & route guarding ---------------------------------------------
 
@@ -234,30 +323,60 @@ class SessionContext:
         return self._role
 
     def is_admin(self) -> bool:
-        """True when the active role is ADMIN."""
-        return self._role == UserRole.ADMIN
+        """True for Tier 1 (operational admin) and Tier 2 (owner)."""
+        return self._role in ADMIN_ROLES
+
+    def is_super_admin(self) -> bool:
+        """True only for the System Owner tier (master-key held)."""
+        return self._role == UserRole.SUPER_ADMIN
 
     def check_access(self, view: str) -> bool:
         """Check whether the active role may access a view.
 
         Returns True when allowed. Raises ValidationError when blocked.
         """
+        if view in SUPER_ADMIN_ONLY_VIEWS and not self.is_super_admin():
+            raise ValidationError(
+                f"View {view!r} requires the SUPER_ADMIN role "
+                f"(Master Recovery Key)")
         if view in ADMIN_ONLY_VIEWS and not self.is_admin():
             raise ValidationError(
-                f"View {view!r} requires ADMIN role")
+                f"View {view!r} requires ADMIN role "
+                f"(unlock with the operational PIN)")
         return True
+
+    # -- support & helpdesk --------------------------------------------------
+
+    @property
+    def support_email(self) -> str:
+        """Configured Support & helpdesk address (empty when unset)."""
+        return self._support_email or ""
+
+    def set_support_email(self, email: str) -> str:
+        """Persist the Support & helpdesk address in user_config.json."""
+        text = str(email or "").strip()
+        if text and not SUPPORT_EMAIL_RE.match(text):
+            raise ValidationError(
+                "Support email must look like support@example.com")
+        self._support_email = text or None
+        self._save_config()
+        return self.support_email
 
     # -- admin panel ---------------------------------------------------------
 
     def get_admin_status(self) -> dict:
-        """Return admin status for the UI (lockout state, attempt count)."""
+        """Return admin status for the UI (tier, lockout, support desk)."""
         self._check_lockout()
         remaining = 0
         if self._lockout_until is not None:
             remaining = max(0, int(self._lockout_until - time.time()))
         return {
             "role": self._role.value,
+            "is_admin": self.is_admin(),
+            "is_super_admin": self.is_super_admin(),
             "failed_attempts": self._failed_pin_attempts,
             "lockout_remaining_seconds": remaining,
             "pin_configured": self._operational_pin_hash is not None,
+            "master_key_configured": self._master_recovery_key is not None,
+            "support_email": self.support_email,
         }

@@ -221,7 +221,31 @@ NAV_GROUPS = (
      ("CONSTITUENTS", (
          ("mix_design", "Mix Design", "page"),
      )),
+     ("ADMINISTRATION", (
+         ("admin_setup", "Admin Setup", "page"),
+         ("global_policy_editor", "Global Policy", "page"),
+         ("security_policy", "Security Policy", "page"),
+     )),
  )
+
+#: Sidebar groups rendered only for an unlocked administrative session.
+RESTRICTED_NAV_GROUPS = frozenset({"ADMINISTRATION"})
+
+
+#: Routes behind the ADMINISTRATION sidebar group (Tier 1+ / Tier 2).
+ADMIN_VIEW_KEYS = frozenset(
+    key for group, items in NAV_GROUPS if group in RESTRICTED_NAV_GROUPS
+    for key, _label, _kind in items)
+
+
+def admin_nav_visible(session_context) -> bool:
+    """True when the sidebar may show the ADMINISTRATION group.
+
+    Least privilege: an unprivileged session never sees the entry, so a
+    site clerk cannot discover the administration surface by looking.
+    """
+    return bool(session_context is not None
+                and session_context.is_admin())
 
 #: Sidebar section-header icons (display only; group keys unchanged).
 NAV_GROUP_ICONS = {
@@ -230,6 +254,7 @@ NAV_GROUP_ICONS = {
      "RESOURCES": "📦",
      "COMMERCIAL": "💰",
      "OUTPUT & EXPORT": "📤",
+    "ADMINISTRATION": "🔐",
      "CONSTITUENTS": "⚙️",
  }
 
@@ -254,6 +279,9 @@ NAV_ITEM_ICONS = {
     "corpdoc": "📑",
      "valuations": "📈",
      "mix_design": "🏗️",
+    "admin_setup": "🔧",
+    "global_policy_editor": "📜",
+    "security_policy": "🛡️",
  }
 
 #: Placeholder copy for modules without backend backing in this build.
@@ -6373,6 +6401,29 @@ _GUIDE_CONTENT.update({
     "verification": VERIFICATION_GUIDE_TEXT,
     "reconciliation": RECONCILIATION_GUIDE_TEXT,
     "mix_design": MIX_DESIGN_GUIDE_TEXT,
+    "admin_setup": (
+        "Administration (Tier 1 daily access). Unlock with the 6-12 digit "
+        "operational PIN to open daily administration: rate updates, GL "
+        "mapping and the Support & Helpdesk address (system.support_email "
+        "in user_config.json). Five consecutive wrong PINs lock the "
+        "operational tier out for five minutes. PIN rotation and security "
+        "policy are never available here: they need the System Owner's "
+        "Master Recovery Key (CVLK-XXXX-XXXX-XXXX)."
+    ),
+    "global_policy_editor": (
+        "Locked security policy parameters, shown read-only: operational "
+        "PIN length, failed attempts before lockout, lockout duration, "
+        "PIN hashing cost, and the Master Recovery Key format. These "
+        "values are enforced in code and can only be changed by the "
+        "System Owner (SUPER_ADMIN) in Security Policy."
+    ),
+    "security_policy": (
+        "System Owner view (Tier 2 - Master Recovery Key). Shows the "
+        "active tier, whether the operational PIN and owner key are "
+        "configured, the support desk address, and the Tier 2-only "
+        "routes. Reaching this page requires the Master Recovery Key "
+        "issued with a signed master_admin.lic."
+    ),
 })
 _register_panel_guides()
 try:
@@ -6450,13 +6501,15 @@ def build_corpdoc_page(body, app):
     disclaimers = tk.Text(left, height=4, wrap="word", background="white")
     disclaimers.pack(fill="x")
     disclaimers.insert("end", profile.get("legal_disclaimers", ""))
+    # tk.Text has no -disabledbackground option (that is a ttk.Entry
+    # option); the white background is set at construction instead.
+    disclaimers.configure(state="disabled")
     profile_status = status_line(left)
 
     def collect_profile():
         collected = {field: widget.get()
                      for field, widget in entries.items()}
-        collected["legal_disclaimers"] = disclaimers.get(
-            "1.0", "end").strip()
+        collected["legal_disclaimers"] = profile.get("legal_disclaimers", "")
         return collected
 
     def fill_profile_widgets(values):
@@ -6613,6 +6666,180 @@ def build_corpdoc_page(body, app):
     refresh_readiness()
 
 
+def _provision_licensing_backups():
+    """Create the licensing backups root on launch (never raises).
+
+    ``%APPDATA%\\CIVOLINK\\licensing\\backups`` holds timestamped copies of
+    license artifacts and owner recovery state; provisioning it up front
+    means the first backup can never fail for a missing directory.
+    """
+    try:
+        from pathlib import Path as _Path
+        from qs_engine.licensing.storage import default_license_dir
+        backups = _Path(default_license_dir()) / "licensing" / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        return backups
+    except Exception:
+        return None      # read-only profile: backups are best-effort
+
+
+def _security_context(app):
+    """Session security context (Tier 1/2 state), created on first use."""
+    context = getattr(app, "security", None)
+    if context is None:
+        from qs_engine.core.security import SessionContext
+        context = SessionContext()
+        try:
+            app.security = context
+        except Exception:
+            pass
+    return context
+
+
+def _sync_admin_nav(app) -> None:
+    """Re-evaluate ADMINISTRATION sidebar visibility after a tier change."""
+    sync = getattr(app, "_sync_admin_nav", None)
+    if callable(sync):
+        sync()
+
+
+def build_admin_setup_page(body, app):
+    """Administration: Tier 1 PIN unlock, support desk, Tier 2 rotation."""
+    from qs_engine.core.errors import QSEngineError, ValidationError
+    build_page_header(body, "Administration",
+                      guide_key="admin_setup", icon="🔧")
+    ctx = _security_context(app)
+    status = status_line(body)
+
+    ttk.Label(body, text="Unlock daily administration (Tier 1)",
+              style="Header.TLabel").pack(anchor="w", pady=(8, 2))
+    unlock_row = ttk.Frame(body)
+    unlock_row.pack(fill="x")
+    pin_var = tk.StringVar()
+    ttk.Label(unlock_row, text="Operational PIN:").pack(side="left")
+    ttk.Entry(unlock_row, textvariable=pin_var, width=14,
+              show="*").pack(side="left", padx=4)
+
+    def _unlock():
+        try:
+            ctx.unlock_with_pin(pin_var.get())
+        except (QSEngineError, ValidationError) as exc:
+            status.config(text=f"Unlock refused: {exc}")
+            return
+        pin_var.set("")
+        _sync_admin_nav(app)
+        status.config(text="● Unlocked as OPERATIONAL_ADMIN")
+
+    ttk.Button(unlock_row, text="Unlock", style="Accent.TButton",
+               command=_unlock).pack(side="left", padx=4)
+
+    ttk.Label(body, text="Support & Helpdesk",
+              style="Header.TLabel").pack(anchor="w", pady=(10, 2))
+    email_row = ttk.Frame(body)
+    email_row.pack(fill="x")
+    email_var = tk.StringVar(value=ctx.support_email)
+    ttk.Entry(email_row, textvariable=email_var,
+              width=34).pack(side="left", padx=4)
+
+    def _save_email():
+        try:
+            saved = ctx.set_support_email(email_var.get())
+        except (QSEngineError, ValidationError) as exc:
+            status.config(text=f"Not saved: {exc}")
+            return
+        status.config(text=f"● Support email saved: {saved}" if saved
+                      else "● Support email cleared")
+
+    ttk.Button(email_row, text="Save Support Email",
+               command=_save_email).pack(side="left", padx=4)
+
+    ttk.Label(body,
+              text="Owner recovery (Tier 2 — Master Recovery Key)",
+              style="Header.TLabel").pack(anchor="w", pady=(10, 2))
+    owner_row = ttk.Frame(body)
+    owner_row.pack(fill="x")
+    key_var = tk.StringVar()
+    new_pin_var = tk.StringVar()
+    ttk.Label(owner_row, text="Master Key:").pack(side="left")
+    ttk.Entry(owner_row, textvariable=key_var,
+              width=24).pack(side="left", padx=4)
+    ttk.Label(owner_row, text="New PIN:").pack(side="left", padx=(8, 0))
+    ttk.Entry(owner_row, textvariable=new_pin_var,
+              width=12).pack(side="left", padx=4)
+
+    def _rotate():
+        try:
+            ctx.reset_pin_with_recovery(key_var.get(), new_pin_var.get())
+        except (QSEngineError, ValidationError) as exc:
+            status.config(text=f"PIN rotation refused: {exc}")
+            return
+        key_var.set("")
+        new_pin_var.set("")
+        _sync_admin_nav(app)
+        status.config(text="● Owner reset complete — session is SUPER_ADMIN")
+
+    ttk.Button(owner_row, text="Rotate PIN (Owner)",
+               command=_rotate).pack(side="left", padx=4)
+    return body
+
+
+def _policy_row(body, label, value):
+    """One label/value row for the read-only policy views."""
+    row = ttk.Frame(body)
+    row.pack(fill="x", pady=1)
+    ttk.Label(row, text=label, width=32).pack(side="left")
+    ttk.Label(row, text=value, style="Status.TLabel").pack(side="left")
+
+
+def build_global_policy_editor_page(body, app):
+    """Global policy reference (read-only snapshot of locked parameters)."""
+    from qs_engine.core import security as sec
+    build_page_header(body, "Global Policy",
+                      guide_key="global_policy_editor", icon="📜")
+    status = status_line(body)
+    ttk.Label(body, text="Locked policy parameters",
+              style="Header.TLabel").pack(anchor="w", pady=(6, 2))
+    _policy_row(body, "Operational PIN length",
+                f"{sec.PIN_MIN_LEN}-{sec.PIN_MAX_LEN} digits")
+    _policy_row(body, "Failed attempts before lockout",
+                str(sec.PIN_LOCKOUT_THRESHOLD))
+    _policy_row(body, "Lockout duration",
+                f"{sec.PIN_LOCKOUT_SECONDS} seconds")
+    _policy_row(body, "PIN hashing",
+                f"PBKDF2-HMAC-SHA256, {sec.PBKDF2_ITERATIONS} rounds")
+    _policy_row(body, "Master Recovery Key format",
+                f"{sec.MASTER_KEY_PREFIX}-XXXX-XXXX-XXXX")
+    status.config(text="● Policy is enforced in code; values are read-only.")
+    return body
+
+
+def build_security_policy_page(body, app):
+    """Security policy (SUPER_ADMIN only): tier matrix and owner state."""
+    from qs_engine.core import security as sec
+    build_page_header(body, "Security Policy",
+                      guide_key="security_policy", icon="🛡️")
+    ctx = _security_context(app)
+    status = status_line(body)
+    state = ctx.get_admin_status()
+    ttk.Label(body, text="Active session", style="Header.TLabel").pack(
+        anchor="w", pady=(6, 2))
+    _policy_row(body, "Role", state["role"])
+    _policy_row(body, "Administrative access",
+                "yes" if state["is_admin"] else "no")
+    _policy_row(body, "System Owner",
+                "yes" if state["is_super_admin"] else "no")
+    _policy_row(body, "Operational PIN configured",
+                "yes" if state["pin_configured"] else "no")
+    _policy_row(body, "Owner key loaded",
+                "yes" if state["master_key_configured"] else "no")
+    _policy_row(body, "Support desk", state["support_email"] or "not set")
+    ttk.Label(body, text="Tier 2 views: "
+              + ", ".join(sorted(sec.SUPER_ADMIN_ONLY_VIEWS)),
+              style="Status.TLabel").pack(anchor="w", pady=(8, 2))
+    status.config(text="● Owner tier — PIN rotation and policy are yours.")
+    return body
+
+
 PAGES = {
     "overview": build_overview_page,
     "project": build_project_page,
@@ -6649,6 +6876,9 @@ PAGES = {
     "corpdoc": build_corpdoc_page,
      "valuations": build_valuations_page,
      "mix_design": build_mix_design_page,
+    "admin_setup": build_admin_setup_page,
+    "global_policy_editor": build_global_policy_editor_page,
+    "security_policy": build_security_policy_page,
  }
 
 
@@ -7084,6 +7314,15 @@ class QSApp(tk.Tk):
         self.license_service = LicensingService(
             provider=NullProvider(), store=LicenseStore())
         self._nav_buttons = {}
+        self._admin_nav_widgets = []
+        # Two-tier security context: least privilege at launch, plus the
+        # System Owner's signed master_admin.lic when one is installed.
+        self.security = _security_context(self)
+        try:
+            self.security.load_master_recovery_key()
+        except Exception:
+            pass  # a missing/tampered owner license is simply no key
+        _provision_licensing_backups()
         self._current = None
         self.active_route_key = None
         self._project_path = None
@@ -7115,10 +7354,16 @@ class QSApp(tk.Tk):
         ttk.Label(nav_inner, text="Estimating Engine",
                   style="Status.TLabel").pack(anchor="w", padx=8)
         for group, items in NAV_GROUPS:
-            ttk.Label(
+            restricted = group in RESTRICTED_NAV_GROUPS
+            group_label = ttk.Label(
                 nav_inner,
                 text=f"{NAV_GROUP_ICONS[group]} {group}",
-                style="Status.TLabel").pack(anchor="w", padx=8, pady=(10, 2))
+                style="Status.TLabel")
+            group_label.pack(anchor="w", padx=8, pady=(10, 2))
+            if restricted:
+                self._admin_nav_widgets.append(
+                    (group_label, {"anchor": "w", "padx": 8,
+                                    "pady": (10, 2)}))
             for key, label, _kind in items:
                 button = tk.Button(
                     nav_inner,
@@ -7128,7 +7373,12 @@ class QSApp(tk.Tk):
                     activeforeground="white", borderwidth=0,
                     command=lambda key=key: self.show(key))
                 button.pack(fill="x", padx=4, pady=1)
+                if restricted:
+                    self._admin_nav_widgets.append(
+                        (button, {"fill": "x", "padx": 4, "pady": 1}))
                 self._nav_buttons[key] = button
+        # ADMINISTRATION stays hidden until the session unlocks Tier 1+.
+        self._sync_admin_nav()
 
         def _scroll_nav(event):
             """Sidebar wheel scroll (widget-level; stops propagation).
@@ -7305,6 +7555,58 @@ class QSApp(tk.Tk):
             return
         self.refresh_status()
 
+    def _sync_admin_nav(self) -> None:
+        """Show or hide the ADMINISTRATION group for the current tier."""
+        visible = admin_nav_visible(self.security)
+        for widget, options in self._admin_nav_widgets:
+            if visible:
+                widget.pack(**options)
+            else:
+                widget.pack_forget()
+        self._admin_nav_visible = visible
+
+    def toast(self, message: str) -> None:
+        """Non-blocking notice: never modal, so it can never stall the UI.
+
+        Used for route-guard refusals and owner actions that fail closed.
+        """
+        text = str(message or "").strip()
+        if not text:
+            return
+        self._toast_text = text
+        label = getattr(self, "_toast_label", None)
+        if label is None:
+            label = tk.Label(self, text=f"⚠ {text}", bg=WARN_AMBER,
+                             fg="white", anchor="w", padx=10, pady=6)
+            self._toast_label = label
+            self.bind("<Configure>", self._reposition_toast, add="+")
+        else:
+            label.config(text=f"⚠ {text}")
+        self._reposition_toast()
+        try:
+            self.after(6000, self._dismiss_toast)
+        except Exception:
+            pass
+
+    def _reposition_toast(self, _event=None) -> None:
+        """Pin the notice to the lower-right corner (integer geometry only)."""
+        label = getattr(self, "_toast_label", None)
+        if label is None:
+            return
+        label.update_idletasks()
+        label.place(
+            x=max(0, self.winfo_width() - label.winfo_reqwidth() - 16),
+            y=max(0, self.winfo_height() - label.winfo_reqheight() - 16),
+            anchor="se")
+
+    def _dismiss_toast(self) -> None:
+        """Remove the transient notice (no-op when already gone)."""
+        label = getattr(self, "_toast_label", None)
+        if label is not None:
+            label.destroy()
+            self._toast_label = None
+        self._toast_text = ""
+
     def show(self, key: str) -> None:
         """Display a navigation page and refresh chrome state.
 
@@ -7314,13 +7616,14 @@ class QSApp(tk.Tk):
         if key not in PAGES:
             raise KeyError(f"Unknown navigation page {key!r}")
         # Route guarding: block unauthorized navigation to admin views.
+        # The context is the session's own tier state (Tier 1/2), never a
+        # detached one, so a guard can never be silently bypassed.
         try:
-            from qs_engine.core.security import SessionContext
-            ctx = getattr(self, "_session_context", None)
-            if ctx is not None:
-                ctx.check_access(key)
+            ctx = _security_context(self)
+            ctx.check_access(key)
         except ValidationError as exc:
-            from .viewmodels import ErrorView
+            # Explicit, non-blocking refusal notice for the operator.
+            self.toast(str(exc))
             self.refresh_status()
             return
         close_all_popovers()
