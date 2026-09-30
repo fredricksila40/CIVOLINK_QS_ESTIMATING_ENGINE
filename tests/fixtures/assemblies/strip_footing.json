@@ -1,0 +1,119 @@
+{
+  "template_id": "strip-footing",
+  "version": "1.0.0",
+  "description": "Strip footing assembly template (DRAFT - NEEDS_VERIFICATION). Structural skeleton only: parameters, estimator-specified practice notes, master-data cross-references, and output line skeletons with null quantities. Nothing here is a verified SMM7/NRM2 rule and no figure is presented as a measured constant. See verification section.",
+  "measurement_basis": {
+    "source": "estimator-specified practice, UNVERIFIED against SMM7/NRM2 (no verified clause registry in this build; standards/ PDFs are reference-only)",
+    "concrete_volume": "Trench length x width x depth in m3 (pure arithmetic, not a measurement rule).",
+    "excavation": "Measured separately through the earthworks take-off; referenced here, not computed.",
+    "edition_note": "No verified SMM7/NRM2 clause registry exists in this build (KNOWN_STANDARDS is name-recognition only). Do not cite clauses from this file."
+  },
+  "parameters": {
+    "trench_length": {
+      "type": "decimal metres",
+      "value": null
+    },
+    "trench_width": {
+      "type": "decimal metres",
+      "value": null
+    },
+    "trench_depth": {
+      "type": "decimal metres",
+      "value": null
+    },
+    "concrete_grade": {
+      "type": "master-data key",
+      "options_from_master_data": [
+        "class_c15",
+        "class_c20",
+        "class_c25",
+        "class_c30"
+      ],
+      "note": "All concrete_classes records are NEEDS_VERIFICATION skeletons."
+    },
+    "wastage_pct": {
+      "type": "decimal percent",
+      "value": null,
+      "note": "Estimator-specified per element. Masonry task wastage figures do not transfer to concrete works."
+    }
+  },
+  "internal_variables": {
+    "concrete_volume_m3": {
+      "expression": "trench_length * trench_width * trench_depth",
+      "value": null
+    }
+  },
+  "outputs": [
+    {
+      "description": "Excavation volume - measured via earthworks take-off, referenced not computed.",
+      "gl_account": null,
+      "gl_account_type": null,
+      "kind": "measured",
+      "note": "Cart-away and backfill handled by the logistics/earthworks flow.",
+      "quantity": null,
+      "resource_key": null,
+      "unit": "m3"
+    },
+    {
+      "description": "Cement bags incl. wastage - computed at take-off.",
+      "gl_account": "10175 - Cement & Binders",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Mix proportions and bag mass from verified data at take-off.",
+      "quantity": null,
+      "resource_key": "portland_cement_42_5",
+      "unit": "bag"
+    },
+    {
+      "description": "Sand tonnage incl. wastage - computed at take-off.",
+      "gl_account": "10176 - Aggregates",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Fine aggregate component.",
+      "quantity": null,
+      "resource_key": "river_sand",
+      "unit": "t"
+    },
+    {
+      "description": "Coarse aggregate tonnage incl. wastage - computed at take-off.",
+      "gl_account": "10176 - Aggregates",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Coarse aggregate component.",
+      "quantity": null,
+      "resource_key": "ballast_20mm",
+      "unit": "t"
+    },
+    {
+      "description": "Reinforcement steel by BBS weight, where detailed - computed at take-off.",
+      "gl_account": null,
+      "gl_account_type": null,
+      "kind": "material",
+      "note": "Bar marks and sizes per structural drawings; resolve to a verified rebar_bars key at take-off. Omit for plain mass concrete.",
+      "quantity": null,
+      "resource_key": null,
+      "unit": "kg"
+    },
+    {
+      "description": "Placing labour hours - entered per call, never auto-filled.",
+      "gl_account": null,
+      "gl_account_type": null,
+      "kind": "labour",
+      "note": "No GL code supplied for labour. Labour rates are entered per call; master rates are null.",
+      "quantity": null,
+      "resource_key": "mason",
+      "unit": "hr"
+    }
+  ],
+  "verification": {
+    "status": "NEEDS_VERIFICATION",
+    "gaps": [
+      "No verified concrete mix proportions per grade.",
+      "No verified wastage percentages for concrete works.",
+      "No verified steel bar schedule (marks/sizes per structural drawings).",
+      "No verified labour GL code.",
+      "No verified SMM7/NRM2 clause citations in this build."
+    ],
+    "bibliography": "standards/measurement/{CESMM,SMM}/ reference PDFs (documentation only)."
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "domain": "rate_templates",
+  "schema_version": "0.1",
+  "table_version": "9.0-skeleton",
+  "description": "Phase 9 skeleton: composite rate build-up structures (component refs + markup labels). All quantities, prices, and percentages are NULL pending verification; binding templates to prices belongs to the BOQ phase. The engine fails closed on incomplete build-up inputs.",
+  "records": [
+    {
+      "key": "concrete_placed_per_m3",
+      "name": "Placed concrete, per m3 (structure only)",
+      "work_unit": "m3",
+      "components": [
+        {"kind": "material", "ref": "portland_cement_42_5", "qty_per_unit": null},
+        {"kind": "material", "ref": "river_sand", "qty_per_unit": null},
+        {"kind": "labour", "ref": "mason", "qty_per_unit": null},
+        {"kind": "plant", "ref": "concrete_mixer", "qty_per_unit": null}
+      ],
+      "markups": [
+        {"label": "site_overhead", "pct": null},
+        {"label": "head_office_overhead", "pct": null},
+        {"label": "risk", "pct": null},
+        {"label": "profit", "pct": null}
+      ],
+      "source": "EDMOLT QS Phase 9 skeleton (structure only; all values unverified)",
+      "version": "9.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "blockwork_per_m2",
+      "name": "Block walling, per m2 (structure only)",
+      "work_unit": "m2",
+      "components": [
+        {"kind": "material", "ref": "concrete_block_200mm", "qty_per_unit": null},
+        {"kind": "material", "ref": "portland_cement_42_5", "qty_per_unit": null},
+        {"kind": "material", "ref": "river_sand", "qty_per_unit": null},
+        {"kind": "labour", "ref": "mason", "qty_per_unit": null}
+      ],
+      "markups": [
+        {"label": "site_overhead", "pct": null},
+        {"label": "head_office_overhead", "pct": null},
+        {"label": "risk", "pct": null},
+        {"label": "profit", "pct": null}
+      ],
+      "source": "EDMOLT QS Phase 9 skeleton (structure only; all values unverified)",
+      "version": "9.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    }
+  ]
+}

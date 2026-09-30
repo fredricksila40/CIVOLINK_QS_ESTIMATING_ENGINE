@@ -1,0 +1,140 @@
+{
+  "template_id": "masonry-wall-assembly",
+  "version": "1.0.0",
+  "description": "Masonry wall assembly template (DRAFT - NEEDS_VERIFICATION). Structural skeleton only: parameters, estimator-specified practice rules, master-data cross-references, and output line skeletons with null quantities. Nothing here is a verified SMM7/NRM2 rule and no figure is presented as a measured constant. See verification section.",
+  "measurement_basis": {
+    "edition_note": "No verified SMM7/NRM2 clause registry exists in this build (KNOWN_STANDARDS is name-recognition only; standards/ PDFs are reference-only and excluded from the bundle). Do not cite clauses from this file.",
+    "mortar_allowance": "Include 10 mm nominal bed and vertical joints.",
+    "net_area": "Net wall-face area in m2.",
+    "openings_rule": "Ignore openings under 0.5 m2; deduct openings >= 0.5 m2.",
+    "source": "task-spec-1 (estimator-specified practice, UNVERIFIED against SMM7/NRM2)"
+  },
+  "parameters": {
+    "block_type": {
+      "master_data_key": "concrete_block_200mm",
+      "options_from_master_data": [
+        "concrete_block_200mm",
+        "concrete_block_150mm",
+        "machine_cut_stone_200mm"
+      ],
+      "type": "master-data key"
+    },
+    "height": {
+      "type": "decimal metres",
+      "value": null
+    },
+    "length": {
+      "type": "decimal metres",
+      "value": null
+    },
+    "mortar_mix": {
+      "note": "e.g. 1:4 cement:sand by estimator specification (unverified).",
+      "type": "string",
+      "value": null
+    },
+    "unit_thickness": {
+      "note": "Must be consistent with the selected block_type once verified dimensions exist.",
+      "type": "string",
+      "value": null
+    },
+    "wastage_pct": {
+      "note": "Task-specified defaults are estimator inputs, not verified constants.",
+      "task_defaults": {
+        "mortar_materials": 7.5,
+        "units": 5.0
+      },
+      "type": "decimal percent",
+      "value": null
+    }
+  },
+  "internal_variables": {
+    "block_face_area_m2": {
+      "expression": "block_length_m * block_height_m",
+      "requires_verified_inputs": [
+        "block length/height from verified master data or project specification"
+      ],
+      "value": null
+    },
+    "dry_mortar_factor": {
+      "source": "task-spec-1 (estimator-specified, unverified)",
+      "value": 1.33
+    },
+    "jointed_block_pitch_m": {
+      "expression": "(block_length_m + 0.010) * (block_height_m + 0.010)",
+      "note": "10 mm nominal bed and vertical joints per task-spec-1.",
+      "value": null
+    },
+    "net_wall_area_m2": {
+      "expression": "gross_wall_area_m2 - sum(openings with area >= 0.5 m2)",
+      "value": null
+    },
+    "nominal_joint_mm": {
+      "source": "task-spec-1 (estimator-specified, unverified)",
+      "value": 10
+    },
+    "opening_deduction_threshold_m2": {
+      "source": "task-spec-1 (estimator-specified, unverified)",
+      "value": 0.5
+    },
+    "units_wastage_pct": {
+      "source": "task-spec-1 (estimator-specified default, unverified)",
+      "value": 5.0
+    },
+    "wet_mortar_per_m2_m3": {
+      "expression": "((jointed_block_pitch_m - block_face_area_m2) * wall_thickness_m) per m2 of face (evaluated once block geometry is verified)",
+      "value": null
+    }
+  },
+  "outputs": [
+    {
+      "description": "Number of blocks incl. wastage - computed at take-off, never baked in.",
+      "gl_account": "10183 - Precast & Concrete Products",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Block geometry (length/height) is null in master data; count cannot be precomputed.",
+      "quantity": null,
+      "resource_key": "concrete_block_200mm",
+      "unit": "piece"
+    },
+    {
+      "description": "Cement bags incl. wastage - computed at take-off.",
+      "gl_account": "10175 - Cement & Binders",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Dry mortar scaled by 1.33 batching factor per task-spec-1; bag mass from verified data at take-off.",
+      "quantity": null,
+      "resource_key": "portland_cement_42_5",
+      "unit": "bag"
+    },
+    {
+      "description": "Sand tonnage incl. wastage - computed at take-off.",
+      "gl_account": "10176 - Aggregates",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Mortar sand component per task-spec-1 mix.",
+      "quantity": null,
+      "resource_key": "river_sand",
+      "unit": "t"
+    },
+    {
+      "description": "Mason hours - entered per call, never auto-filled.",
+      "gl_account": null,
+      "gl_account_type": null,
+      "kind": "labour",
+      "note": "No GL code supplied ('500xx' is a placeholder pattern, not a valid code). Labour rates are entered per call; master rates are null.",
+      "quantity": null,
+      "resource_key": "mason",
+      "unit": "hr"
+    }
+  ],
+  "verification": {
+    "bibliography": "standards/measurement/{CESMM,SMM}/ reference PDFs (documentation only).",
+    "gaps": [
+      "No verified block dimensions (length/height/thickness null in masonry_units).",
+      "No verified mortar consumption rate per m2.",
+        "No verified labour GL code (placeholder pattern supplied, not a valid code).",
+      "No verified SMM7/NRM2 clause citations in this build."
+    ],
+    "status": "NEEDS_VERIFICATION"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "domain": "soils",
+  "schema_version": "0.1",
+  "table_version": "5.0-skeleton",
+  "description": "Phase 5 skeleton: soil types with swell/compaction factors and bank density. All numerics NULL pending engineering verification (see docs/QS_ASSUMPTION_REGISTER.md). The engine fails closed on these records unless complete explicit overrides are supplied. Loose-state densities are NOT derived here; tonnage of loose cart-away belongs to the truck/tonnage phase with verified loose densities.",
+  "records": [
+    {
+      "key": "topsoil_vegetable",
+      "name": "Topsoil / Vegetable Soil",
+      "swell_factor": null,
+      "compact_factor": null,
+      "density_kg_per_m3": null,
+      "source": "EDMOLT QS Phase 5 skeleton (keys only; numerics unverified)",
+      "version": "5.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "clay_soil",
+      "name": "Clay Soil",
+      "swell_factor": null,
+      "compact_factor": null,
+      "density_kg_per_m3": null,
+      "source": "EDMOLT QS Phase 5 skeleton (keys only; numerics unverified)",
+      "version": "5.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "gravel_soil",
+      "name": "Gravel / Murram Soil",
+      "swell_factor": null,
+      "compact_factor": null,
+      "density_kg_per_m3": null,
+      "source": "EDMOLT QS Phase 5 skeleton (keys only; numerics unverified)",
+      "version": "5.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "rock_hard",
+      "name": "Hard Rock (blasted)",
+      "swell_factor": null,
+      "compact_factor": null,
+      "density_kg_per_m3": null,
+      "source": "EDMOLT QS Phase 5 skeleton (keys only; numerics unverified)",
+      "version": "5.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    }
+  ]
+}

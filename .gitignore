@@ -1,0 +1,49 @@
+# Signing credentials: never commit keys, certificates, or stores.
+*.pfx
+*.p12
+*.crt
+*.key
+*.pem
+
+# Release outputs (rebuilt by scripts/build_release.py).
+release/
+dist/
+build/
+
+# Per-machine user data written at runtime (enterprise rate library and
+# Phase 25 material/category overrides) — not shipped seed content.
+data/user_materials.json
+data/user_categories.json
+data/rate_library.db
+
+# Python toolchain noise.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+.venv*/
+venv/
+
+# Two-tier security state (qs_engine/core/security.py): the operational
+# PIN hash, the failed-attempt counter and the Master Recovery Key live
+# in data/user_config.json - it must never enter version control.
+data/user_config.json
+data/*.clk
+data/*.tmp
+*.lic
+
+# Runtime state beyond data/: company profile, session archives, caches.
+config/company_profile.json
+*.clk
+*.tmp
+*.db
+output/*
+!output/.gitkeep
+
+# Editor / OS noise.
+.env
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

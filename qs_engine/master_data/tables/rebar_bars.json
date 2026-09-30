@@ -1,0 +1,78 @@
+{
+  "domain": "rebar_bars",
+  "schema_version": "0.1",
+  "table_version": "4.0-skeleton",
+  "description": "Phase 4 skeleton: deformed bar designations Y8-Y32. diameter_mm is the nominal diameter definitional to each designation key; mass_kg_per_m and default_wastage_pct are NULL pending verification (see docs/QS_ASSUMPTION_REGISTER.md). The engine fails closed on these records unless complete explicit overrides are supplied; unit mass may resolve from the verified table value or from the nominal-mass formula with an explicitly supplied steel density.",
+  "records": [
+    {
+      "key": "Y8",
+      "diameter_mm": "8",
+      "mass_kg_per_m": null,
+      "default_wastage_pct": null,
+      "source": "EDMOLT QS Phase 4 skeleton (designations only; mass and wastage unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "Y10",
+      "diameter_mm": "10",
+      "mass_kg_per_m": null,
+      "default_wastage_pct": null,
+      "source": "EDMOLT QS Phase 4 skeleton (designations only; mass and wastage unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "Y12",
+      "diameter_mm": "12",
+      "mass_kg_per_m": null,
+      "default_wastage_pct": null,
+      "source": "EDMOLT QS Phase 4 skeleton (designations only; mass and wastage unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "Y16",
+      "diameter_mm": "16",
+      "mass_kg_per_m": null,
+      "default_wastage_pct": null,
+      "source": "EDMOLT QS Phase 4 skeleton (designations only; mass and wastage unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "Y20",
+      "diameter_mm": "20",
+      "mass_kg_per_m": null,
+      "default_wastage_pct": null,
+      "source": "EDMOLT QS Phase 4 skeleton (designations only; mass and wastage unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "Y25",
+      "diameter_mm": "25",
+      "mass_kg_per_m": null,
+      "default_wastage_pct": null,
+      "source": "EDMOLT QS Phase 4 skeleton (designations only; mass and wastage unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "Y32",
+      "diameter_mm": "32",
+      "mass_kg_per_m": null,
+      "default_wastage_pct": null,
+      "source": "EDMOLT QS Phase 4 skeleton (designations only; mass and wastage unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    }
+  ]
+}

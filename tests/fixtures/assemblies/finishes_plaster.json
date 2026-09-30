@@ -1,0 +1,80 @@
+{
+  "template_id": "finishes-plaster",
+  "version": "1.0.0",
+  "description": "Plaster finishes assembly template (DRAFT - NEEDS_VERIFICATION). Structural skeleton only: parameters, estimator-specified practice notes, master-data cross-references, and output line skeletons with null quantities. Nothing here is a verified SMM7/NRM2 rule and no figure is presented as a measured constant. See verification section.",
+  "measurement_basis": {
+    "source": "estimator-specified practice, UNVERIFIED against SMM7/NRM2 (no verified clause registry in this build; standards/ PDFs are reference-only)",
+    "net_area": "Net plastered face area in m2.",
+    "openings": "Openings treatment unspecified - confirm SMM7/NRM2 practice per element. Do not assume the masonry 0.5 m2 rule transfers across trades.",
+    "edition_note": "No verified SMM7/NRM2 clause registry exists in this build (KNOWN_STANDARDS is name-recognition only). Do not cite clauses from this file."
+  },
+  "parameters": {
+    "surface_area": {
+      "type": "decimal square metres",
+      "value": null
+    },
+    "thickness_mm": {
+      "type": "decimal millimetres",
+      "value": null
+    },
+    "mortar_mix": {
+      "type": "string",
+      "value": null,
+      "note": "Cement:sand ratio by specification (unverified)."
+    },
+    "wastage_pct": {
+      "type": "decimal percent",
+      "value": null,
+      "note": "Estimator-specified per element. Masonry task wastage figures do not transfer to plastering."
+    }
+  },
+  "internal_variables": {
+    "wet_plaster_volume_m3": {
+      "expression": "surface_area_m2 * (thickness_mm / 1000)",
+      "value": null
+    }
+  },
+  "outputs": [
+    {
+      "description": "Cement bags incl. wastage - computed at take-off.",
+      "gl_account": "10175 - Cement & Binders",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Binder component per specified mix; bag mass from verified data at take-off.",
+      "quantity": null,
+      "resource_key": "portland_cement_42_5",
+      "unit": "bag"
+    },
+    {
+      "description": "Sand tonnage incl. wastage - computed at take-off.",
+      "gl_account": "10176 - Aggregates",
+      "gl_account_type": "Inventory (Asset)",
+      "kind": "material",
+      "note": "Fine aggregate component per specified mix.",
+      "quantity": null,
+      "resource_key": "river_sand",
+      "unit": "t"
+    },
+    {
+      "description": "Plastering labour hours - entered per call, never auto-filled.",
+      "gl_account": null,
+      "gl_account_type": null,
+      "kind": "labour",
+      "note": "No GL code supplied for labour. Coverage rates live in master coverages only where verified; plaster coverage is unverified. Labour rates are entered per call.",
+      "quantity": null,
+      "resource_key": "mason",
+      "unit": "hr"
+    }
+  ],
+  "verification": {
+    "status": "NEEDS_VERIFICATION",
+    "gaps": [
+      "No verified plaster coverage rate per coat/thickness.",
+      "No verified wastage percentages for plastering.",
+      "No verified openings treatment for finishes.",
+      "No verified labour GL code.",
+      "No verified SMM7/NRM2 clause citations in this build."
+    ],
+    "bibliography": "standards/measurement/{CESMM,SMM}/ reference PDFs (documentation only)."
+  }
+}

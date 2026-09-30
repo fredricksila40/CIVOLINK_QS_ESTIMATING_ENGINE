@@ -1,0 +1,68 @@
+{
+  "domain": "coverages",
+  "schema_version": "0.1",
+  "table_version": "6.0-skeleton",
+  "description": "Phase 4 + 6 skeletons: release-agent, paint-per-coat, tile adhesive/grout consumption keys. All rates NULL pending verification; engines take explicit parameters until records are verified.",
+  "records": [
+    {
+      "key": "formwork_release_agent",
+      "activity": "Formwork release agent application",
+      "material_key": "release_agent",
+      "coverage_per_unit": null,
+      "coverage_unit": "m2",
+      "consumption_unit": "L",
+      "source": "EDMOLT QS Phase 4 skeleton (keys only; rate unverified)",
+      "version": "4.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "emulsion_paint_per_coat",
+      "activity": "Emulsion painting, per coat",
+      "material_key": "emulsion_paint",
+      "coverage_per_unit": null,
+      "coverage_unit": "m2",
+      "consumption_unit": "L",
+      "source": "EDMOLT QS Phase 6 skeleton (keys only; rate unverified)",
+      "version": "6.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "gloss_paint_per_coat",
+      "activity": "Gloss painting, per coat",
+      "material_key": "gloss_paint",
+      "coverage_per_unit": null,
+      "coverage_unit": "m2",
+      "consumption_unit": "L",
+      "source": "EDMOLT QS Phase 6 skeleton (keys only; rate unverified)",
+      "version": "6.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "tile_adhesive_bedding",
+      "activity": "Tile bedding adhesive",
+      "material_key": "tile_adhesive",
+      "coverage_per_unit": null,
+      "coverage_unit": "m2",
+      "consumption_unit": "kg",
+      "source": "EDMOLT QS Phase 6 skeleton (keys only; rate unverified)",
+      "version": "6.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    },
+    {
+      "key": "tile_grout_jointing",
+      "activity": "Tile joint grouting",
+      "material_key": "tile_grout",
+      "coverage_per_unit": null,
+      "coverage_unit": "m2",
+      "consumption_unit": "kg",
+      "source": "EDMOLT QS Phase 6 skeleton (keys only; rate unverified)",
+      "version": "6.0",
+      "effective_date": "2026-09-22",
+      "verification_status": "NEEDS_VERIFICATION"
+    }
+  ]
+}
