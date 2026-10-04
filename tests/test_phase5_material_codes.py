@@ -63,6 +63,24 @@ def _app_or_skip(repository):
         pytest.skip(f"QSApp needs a display: {exc}")
 
 
+def _walk(widget):
+    out = []
+    for child in widget.winfo_children():
+        out.append(child)
+        out.extend(_walk(child))
+    return out
+
+
+def _find_button(widget, text):
+    for child in _walk(widget):
+        try:
+            if child.cget("text") == text:
+                return child
+        except Exception:
+            continue  # widgets without a text option (grids, frames)
+    return None
+
+
 # --- Task 5.1: the five policy modes ---------------------------------------
 
 def test_category_prefix_policy_uses_category_shorthand():
@@ -388,6 +406,210 @@ def test_dialog_add_mode_suggestion_follows_active_policy(tmp_path):
         app.update()
     finally:
         app.destroy()
+
+
+# --- Edit Category button + category editor dialog ----------------------------
+
+def test_materials_page_offers_edit_category_button():
+    from qs_engine.ui import views
+    source = inspect.getsource(views.build_materials_page)
+    assert 'text="Edit Category"' in source
+    assert "on_edit_category" in source
+    # routes through the category editor with an existing record
+    assert "category=category.to_dict()" in source
+    assert "category_editor_dialog" in source
+    # the grid itself stays read-only (pinned)
+    assert "ttk.Entry" not in source
+
+
+def test_materials_page_edit_category_requires_selection():
+    from qs_engine.ui import views
+    source = inspect.getsource(views.build_materials_page)
+    # a category edit without a selected row is reported, never guessed
+    assert "Select a material to edit its category first." in source
+    assert "grid.selection()" in source
+
+
+def test_materials_page_edit_category_opens_editor_for_seed_row(
+        tmp_path, monkeypatch):
+    """A SHIPPED material's Edit Category opens the same editor — the
+    old read-only refusal for seed categories is gone."""
+    from qs_engine.ui import views
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    captured = {}
+
+    def _capture(parent, registry, on_added=None, *, category=None):
+        captured["category"] = category
+        captured["registry"] = registry
+        return None
+
+    monkeypatch.setattr(views, "category_editor_dialog", _capture)
+    app = _app_or_skip(stack.resolver)
+    app.update_idletasks()
+    try:
+        app.show("materials")
+        app.update()
+        grids = [w for w in _walk(app.workspace.interior)
+                 if w.winfo_class() == "Treeview"]
+        assert grids, "catalogue grid missing"
+        # first row: a shipped (seed) material on its seed category
+        grids[0].selection_set(grids[0].get_children()[0])
+        button = _find_button(app.workspace.interior, "Edit Category")
+        assert button is not None
+        button.invoke()
+        app.update()
+        assert captured, "Edit Category did not route to the editor"
+        category = captured["category"]
+        assert category["source"] == "seed"
+        assert stack.registry.get_category(
+            category["category_id"]).source == "seed"
+        assert captured["registry"] is stack.registry
+    finally:
+        app.destroy()
+
+
+def test_category_editor_dialog_add_mode_is_unchanged(tmp_path):
+    from qs_engine.ui import views
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    app = _app_or_skip(stack.resolver)
+    app.update_idletasks()
+    try:
+        handle = views.category_editor_dialog(app, stack.registry)
+        assert handle is not None
+        assert handle["dialog"].title() == "Add Custom Category"
+        assert handle["name"].get() == ""
+        assert handle["add"].cget("text") == "Add Category"
+        handle["name"].insert(0, "Brand New Cat")
+        handle["add"].invoke()
+        app.update()
+        assert handle["result"]["category_id"] == "user:brand-new-cat"
+        assert handle["result"]["source"] == "user"
+    finally:
+        app.destroy()
+
+
+def test_category_editor_dialog_edit_mode_prefills_and_saves(tmp_path):
+    from qs_engine.ui import views
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    created = stack.registry.add_custom_category(
+        "Kenya Supplies", prefix="KEN", sap_gl_code="10999",
+        gl_description="Inventory - Kenya", format_template="{PREFIX}-{SEQUENCE}",
+        sequence_padding=4, separator="-")
+    app = _app_or_skip(stack.resolver)
+    app.update_idletasks()
+    try:
+        handle = views.category_editor_dialog(
+            app, stack.registry,
+            category=stack.registry.get_category(created["category_id"])
+            .to_dict())
+        assert handle is not None
+        assert handle["dialog"].title() == "Edit Material Category"
+        assert handle["add"].cget("text") == "Save Category"
+        # every field is pre-filled from the stored record
+        assert handle["name"].get() == "Kenya Supplies"
+        assert handle["prefix"].get() == "KEN"
+        assert handle["gl_code"].get() == "10999"
+        assert handle["gl_description"].get() == "Inventory - Kenya"
+        assert handle["template"].get() == "{PREFIX}-{SEQUENCE}"
+        assert handle["padding"].get() == "4"
+        assert handle["separator"].get() == "-"
+        # edit and save: the id is stable across the rename
+        handle["name"].delete(0, "end")
+        handle["name"].insert(0, "Kenya Supplies 2026")
+        handle["gl_code"].delete(0, "end")
+        handle["gl_code"].insert(0, "10888")
+        handle["add"].invoke()
+        app.update()
+        saved = handle["result"]
+        assert saved is not None
+        assert saved["category_name"] == "Kenya Supplies 2026"
+        assert saved["sap_gl_code"] == "10888"
+        assert saved["category_id"] == created["category_id"]
+        # the registry (and disk) carry the edit
+        assert stack.registry.resolve_category(
+            created["category_id"]).category_name == "Kenya Supplies 2026"
+    finally:
+        app.destroy()
+
+
+def test_category_editor_dialog_edit_fails_closed(tmp_path):
+    from qs_engine.ui import views
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    created = stack.registry.add_custom_category("Doomed", prefix="DM")
+    app = _app_or_skip(stack.resolver)
+    app.update_idletasks()
+    try:
+        handle = views.category_editor_dialog(
+            app, stack.registry,
+            category=stack.registry.get_category(created["category_id"])
+            .to_dict())
+        assert handle is not None
+        # a name that would shadow seed master data is refused in-dialog
+        handle["name"].delete(0, "end")
+        handle["name"].insert(0, "aggregate")
+        handle["add"].invoke()
+        app.update()
+        assert handle["result"] is None
+        assert "Not saved" in handle["status"].cget("text")
+        # nothing was written
+        assert stack.registry.get_category(
+            created["category_id"]).category_name == "Doomed"
+    finally:
+        app.destroy()
+
+
+def test_category_editor_dialog_edits_seed_category(tmp_path):
+    """The Edit Category dialog edits a SHIPPED category by default:
+    pre-filled from the seed record, the stable id preserved, and the
+    edit persisted as an override — shipped tables stay byte-identical."""
+    from qs_engine.ui import views
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    before = _seed_hashes()
+    seed = stack.registry.get_category("aggregate").to_dict()
+    assert seed["source"] == "seed"
+    app = _app_or_skip(stack.resolver)
+    app.update_idletasks()
+    try:
+        handle = views.category_editor_dialog(app, stack.registry,
+                                              category=seed)
+        assert handle is not None
+        assert handle["dialog"].title() == "Edit Material Category"
+        # every field is pre-filled from the shipped record
+        assert handle["name"].get() == "aggregate"
+        assert handle["prefix"].get() == "AGG"
+        assert handle["gl_code"].get() == "10176"
+        # edit binding + name; the category_id never changes
+        handle["prefix"].delete(0, "end")
+        handle["prefix"].insert(0, "AGX")
+        handle["gl_code"].delete(0, "end")
+        handle["gl_code"].insert(0, "10999")
+        handle["name"].delete(0, "end")
+        handle["name"].insert(0, "Aggregates")
+        handle["add"].invoke()
+        app.update()
+        assert handle["result"] is not None
+        assert handle["result"]["category_id"] == "aggregate"
+        assert handle["result"]["source"] == "seed"
+        assert handle["result"]["prefix"] == "AGX"
+        # the live registry carries the edit
+        assert stack.registry.get_category("aggregate").prefix == "AGX"
+        assert stack.registry.get_category_by_prefix("AGX").category_id == (
+            "aggregate")
+    finally:
+        app.destroy()
+    # the shipped seed table is never written
+    assert _seed_hashes() == before
+    # and the edit survives a restart over the same data dir
+    again = build_material_stack(MasterDataRepository(), tmp_path)
+    cat = again.registry.get_category("aggregate")
+    assert cat.prefix == "AGX"
+    assert cat.sap_gl_code == "10999"
+    assert cat.source == "seed"
+    # the rename re-points nothing: the stable id still resolves
+    assert again.registry.resolve_category("Aggregates").category_id == (
+        "aggregate")
+    assert again.registry.resolve_category("aggregate").category_id == (
+        "aggregate")
 
 
 # --- Task 5.3: Project Setup + .clk binding ---------------------------------

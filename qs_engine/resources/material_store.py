@@ -98,6 +98,9 @@ class MaterialStore:
         self.path = Path(path) if path is not None else default_materials_path()
         self._registry = registry
         self._records: List[dict] = []
+        #: Shipped (seed) keys the operator removed from the catalogue
+        #: view — a user-side overlay; the seed table is never written.
+        self._hidden_seed: List[str] = []
         self._load()
 
     def _load(self) -> None:
@@ -108,6 +111,7 @@ class MaterialStore:
         safely, never partially applied).
         """
         self._records = []
+        self._hidden_seed = []
         if not self.path.exists():
             return
         try:
@@ -136,6 +140,26 @@ class MaterialStore:
                     f"got {type(record).__name__}")
             records.append(self.validate_material(record))
         self._records = records
+        hidden = payload.get("hidden_seed_keys", [])
+        if not isinstance(hidden, list):
+            raise ValidationError(
+                f"User material store {self.path}: 'hidden_seed_keys' "
+                f"must be a list")
+        cleaned: List[str] = []
+        for key in hidden:
+            if not isinstance(key, str) or not key.strip():
+                raise ValidationError(
+                    f"User material store {self.path}: 'hidden_seed_keys' "
+                    f"entries must be non-empty strings")
+            text = key.strip()
+            if text.startswith(USER_KEY_PREFIX):
+                raise ValidationError(
+                    f"User material store {self.path}: 'hidden_seed_keys' "
+                    f"entry {text!r} may not be a user key (user materials "
+                    f"are deactivated, never hidden as seed)")
+            if text not in cleaned:
+                cleaned.append(text)
+        self._hidden_seed = cleaned
 
     def _persist(self) -> None:
         """Atomically write the in-memory records to disk."""
@@ -143,6 +167,7 @@ class MaterialStore:
             "schema_version": SCHEMA_VERSION,
             "updated_on": date.today().isoformat(),
             "materials": [dict(record) for record in self._records],
+            "hidden_seed_keys": list(self._hidden_seed),
         }
         tmp = self.path.with_name(self.path.name + ".tmp")
         try:
@@ -448,6 +473,80 @@ class MaterialStore:
             self._records = snapshot
             raise
         return dict(updated)
+
+    def reactivate_material(self, key) -> dict:
+        """Undo :meth:`deactivate_material`: the material rejoins the
+        catalogue and starts resolving again.
+
+        An already-active material is returned unchanged (idempotent —
+        no redundant write). The canonical key never changes.
+        """
+        current = dict(self._resolve_reference(key))
+        if current.get("active", True):
+            return current
+        updated = dict(current)
+        updated["active"] = True
+        position = next(i for i, stored in enumerate(self._records)
+                        if str(stored.get("key")) == current["key"])
+        snapshot = list(self._records)
+        self._records[position] = updated
+        try:
+            self._persist()
+        except Exception:
+            self._records = snapshot
+            raise
+        return dict(updated)
+
+    def inactive_materials(self) -> List[dict]:
+        """Soft-deleted user materials (removed catalogue rows, restorable)."""
+        return [dict(record) for record in self._records
+                if not record.get("active", True)]
+
+    def hidden_seed_keys(self) -> List[str]:
+        """Shipped keys the operator removed from the catalogue view."""
+        return list(self._hidden_seed)
+
+    def hide_seed_material(self, key) -> List[str]:
+        """Remove a SHIPPED material from the catalogue view (reversible).
+
+        A user-side overlay only: the seed table is never written and
+        the resolver keeps resolving the key for existing estimates —
+        only the catalogue listing (and its counts) drop the row.
+        User materials leave the catalogue through
+        :meth:`deactivate_material` instead, so a ``user:`` key here
+        fails closed. Re-hiding an already-hidden key is a no-op.
+        """
+        text = str(key or "").strip()
+        if not text:
+            raise ValidationError("Hidden material key must be non-empty")
+        if text.startswith(USER_KEY_PREFIX):
+            raise ValidationError(
+                f"Material {text!r} is a user material; remove it with "
+                f"deactivate_material, not the seed-catalogue overlay")
+        if text in self._hidden_seed:
+            return list(self._hidden_seed)
+        self._hidden_seed.append(text)
+        try:
+            self._persist()
+        except Exception:
+            self._hidden_seed.remove(text)
+            raise
+        return list(self._hidden_seed)
+
+    def unhide_seed_material(self, key) -> List[str]:
+        """Put a hidden shipped material back into the catalogue view."""
+        text = str(key or "").strip()
+        if text not in self._hidden_seed:
+            raise ValidationError(
+                f"Material {text!r} is not hidden from the catalogue")
+        snapshot = list(self._hidden_seed)
+        self._hidden_seed.remove(text)
+        try:
+            self._persist()
+        except Exception:
+            self._hidden_seed = snapshot
+            raise
+        return list(self._hidden_seed)
 
 
 # ------------------------------------------------------------------ #

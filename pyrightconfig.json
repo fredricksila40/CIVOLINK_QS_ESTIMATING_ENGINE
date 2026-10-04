@@ -1,0 +1,16 @@
+{
+  "include": [
+    "qs_engine",
+    "scripts"
+  ],
+  "exclude": [
+    "dist",
+    "build",
+    "output",
+    "tests",
+    "**/__pycache__"
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "none"
+}

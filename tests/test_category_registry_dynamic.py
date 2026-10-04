@@ -512,6 +512,256 @@ def test_registry_list_categories_includes_formatting(stack):
     assert by_id["aggregate"]["sap_gl_code"] == "10176"
 
 
+# --- category editing (update_category) ----------------------------------------
+
+def test_registry_user_category_can_be_edited(stack):
+    created = stack.registry.add_custom_category("Kenya Supplies",
+                                                 prefix="KEN")
+    updated = stack.registry.update_category(
+        created["category_id"], name="Kenya Supplies (2026)",
+        prefix="KEN2", sap_gl_code="10999",
+        gl_description="Inventory - Kenya")
+    assert updated["category_name"] == "Kenya Supplies (2026)"
+    assert updated["prefix"] == "KEN2"
+    assert updated["sap_gl_code"] == "10999"
+    # the stable id never changes on a rename
+    assert updated["category_id"] == created["category_id"]
+
+
+def test_registry_category_edit_persists(tmp_path):
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    created = stack.registry.add_custom_category("Persist Me", prefix="PER")
+    stack.registry.update_category(
+        created["category_id"], name="Persist Me Renamed",
+        format_template="{PREFIX}/{SEQUENCE}", sequence_padding=5,
+        separator="/")
+    reloaded = CategoryRegistry(
+        MasterDataRepository(), tmp_path / "user_categories.json")
+    cat = reloaded.get_category(created["category_id"])
+    assert cat.category_name == "Persist Me Renamed"
+    assert cat.format_template == "{PREFIX}/{SEQUENCE}"
+    assert cat.sequence_padding == 5
+    assert cat.separator == "/"
+
+
+def test_registry_category_edit_omitted_fields_are_unchanged(stack):
+    created = stack.registry.add_custom_category(
+        "Keep Mine", prefix="KPM", sap_gl_code="10100",
+        gl_description="Original", sequence_padding=3)
+    updated = stack.registry.update_category(created["category_id"],
+                                              name="Keep Mine Renamed")
+    assert updated["category_name"] == "Keep Mine Renamed"
+    assert updated["prefix"] == "KPM"
+    assert updated["sap_gl_code"] == "10100"
+    assert updated["gl_description"] == "Original"
+    assert updated["sequence_padding"] == 3
+
+
+def test_registry_category_edit_can_clear_optional_formatting(stack):
+    created = stack.registry.add_custom_category(
+        "Clear Me", prefix="CLR", format_template="{PREFIX}.{SEQUENCE}",
+        sequence_padding=4, separator=".")
+    updated = stack.registry.update_category(
+        created["category_id"], format_template=None,
+        sequence_padding=None, separator=None)
+    # explicit None clears back to the project default (never hardcoded)
+    assert updated["format_template"] is None
+    assert updated["sequence_padding"] is None
+    assert updated["separator"] is None
+
+
+def test_registry_seed_category_is_editable_by_default(stack):
+    # preexisting (seed) categories are editable by default: the edit
+    # lands on the category itself, keeping its id and seed provenance.
+    updated = stack.registry.update_category(
+        "aggregate", prefix="AGX", sap_gl_code="10999",
+        gl_description="Inventory Account - Aggregates")
+    assert updated["category_id"] == "aggregate"
+    assert updated["source"] == "seed"
+    cat = stack.registry.get_category("aggregate")
+    assert cat.prefix == "AGX"
+    assert cat.sap_gl_code == "10999"
+    assert cat.gl_description == "Inventory Account - Aggregates"
+    # every lookup follows the edited binding
+    assert stack.registry.get_category_by_prefix("AGX").category_id == (
+        "aggregate")
+    assert stack.registry.get_category_by_prefix("AGG") is None
+    by_name = stack.registry.resolve_category("aggregate")
+    assert by_name.prefix == "AGX"
+
+
+def test_registry_seed_category_edit_keeps_omitted_fields(stack):
+    stack.registry.update_category("binder", sap_gl_code="10199")
+    cat = stack.registry.get_category("binder")
+    assert cat.prefix == "CEM"            # untouched
+    assert cat.sap_gl_code == "10199"     # edited
+    assert cat.category_name == "binder"  # untouched
+
+
+def test_registry_seed_category_edit_persists(tmp_path):
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    stack.registry.update_category(
+        "aggregate", name="Aggregates (Bulk)", prefix="AGB",
+        format_template="{PREFIX}/{SEQUENCE}", sequence_padding=4,
+        separator="/")
+    reloaded = CategoryRegistry(
+        MasterDataRepository(), tmp_path / "user_categories.json")
+    cat = reloaded.get_category("aggregate")
+    assert cat.category_name == "Aggregates (Bulk)"
+    assert cat.prefix == "AGB"
+    assert cat.format_template == "{PREFIX}/{SEQUENCE}"
+    assert cat.sequence_padding == 4
+    assert cat.separator == "/"
+    assert cat.source == "seed"
+    # the stable id still resolves after the rename
+    assert reloaded.resolve_category("aggregate").category_id == "aggregate"
+
+
+def test_registry_seed_category_edit_does_not_touch_seed_tables(stack):
+    seed_file = (Path(__file__).parent.parent / "qs_engine" /
+                 "master_data" / "tables" / "materials.json")
+    before = seed_file.read_bytes()
+    stack.registry.update_category(
+        "aggregate", name="Renamed Seed", prefix="AGX",
+        sap_gl_code="10999", gl_description="Inventory Account - Renamed")
+    assert seed_file.read_bytes() == before, "seed table bytes changed"
+
+
+def test_registry_seed_category_edit_validation(stack):
+    with pytest.raises(ValidationError, match="prefix"):
+        stack.registry.update_category("aggregate", prefix="lowercase")
+    # a prefix another category already holds is refused
+    with pytest.raises(ValidationError, match="already used by"):
+        stack.registry.update_category("aggregate", prefix="CEM")
+    # renaming onto another seed category is refused
+    with pytest.raises(ValidationError, match="shadow seed category"):
+        stack.registry.update_category("aggregate", name="binder")
+    with pytest.raises(ValidationError, match="non-empty"):
+        stack.registry.update_category("aggregate", name="   ")
+
+
+def test_registry_seed_edit_cannot_take_user_category_name(stack):
+    stack.registry.add_custom_category("Kenya Supplies", prefix="KEN")
+    with pytest.raises(ValidationError, match="already exists"):
+        stack.registry.update_category("aggregate", name="Kenya Supplies")
+
+
+def test_registry_unknown_category_edit_refused(stack):
+    with pytest.raises(ValidationError, match="Unknown material category"):
+        stack.registry.update_category("never-made", name="Ghost")
+    with pytest.raises(ValidationError, match="Unknown user material category"):
+        stack.registry.update_category("user:never-made", name="Ghost")
+
+
+def test_registry_malformed_override_rejected(stack):
+    path = stack.registry.path
+
+    def _write(overrides):
+        path.write_text(json.dumps({
+            "schema_version": "1.0", "categories": [],
+            "overrides": overrides}), encoding="utf-8")
+
+    # an override may never claim a user category id
+    _write([{"category_id": "user:kenya-supplies", "prefix": "KEN"}])
+    with pytest.raises(ValidationError, match="may not target a user"):
+        CategoryRegistry(MasterDataRepository(), path)
+    # an override must carry at least one editable field
+    _write([{"category_id": "aggregate"}])
+    with pytest.raises(ValidationError, match="no editable fields"):
+        CategoryRegistry(MasterDataRepository(), path)
+    # overrides must be a list
+    path.write_text(json.dumps({
+        "schema_version": "1.0", "categories": [],
+        "overrides": {}}), encoding="utf-8")
+    with pytest.raises(ValidationError, match="must be a list"):
+        CategoryRegistry(MasterDataRepository(), path)
+    # malformed binding values fail closed (prefix length/charset,
+    # padded like CategoryRecord normalisation: uppercased first)
+    _write([{"category_id": "aggregate", "prefix": "waytoolongprefix"}])
+    with pytest.raises(ValidationError, match="prefix"):
+        CategoryRegistry(MasterDataRepository(), path)
+    _write([{"category_id": "aggregate", "prefix": "LO-W"}])
+    with pytest.raises(ValidationError, match="prefix"):
+        CategoryRegistry(MasterDataRepository(), path)
+    _write([{"category_id": "aggregate", "sequence_padding": 0}])
+    with pytest.raises(ValidationError, match="sequence_padding"):
+        CategoryRegistry(MasterDataRepository(), path)
+    _write([{"category_id": "aggregate", "separator": "--"}])
+    with pytest.raises(ValidationError, match="separator"):
+        CategoryRegistry(MasterDataRepository(), path)
+
+
+def test_registry_file_without_overrides_key_still_loads(stack):
+    # files written before seed editing existed keep loading unchanged
+    path = stack.registry.path
+    path.write_text(json.dumps(
+        {"schema_version": "1.0", "categories": []}), encoding="utf-8")
+    reloaded = CategoryRegistry(MasterDataRepository(), path)
+    assert reloaded.get_category("aggregate").prefix == "AGG"
+
+
+def test_registry_category_edit_cannot_shadow_seed(stack):
+    created = stack.registry.add_custom_category("Mine", prefix="MIN")
+    with pytest.raises(ValidationError, match="shadow seed category"):
+        stack.registry.update_category(created["category_id"],
+                                       name="aggregate")
+
+
+def test_registry_category_edit_cannot_duplicate_user(stack):
+    first = stack.registry.add_custom_category("Alpha", prefix="ALP")
+    stack.registry.add_custom_category("Beta", prefix="BET")
+    with pytest.raises(ValidationError, match="already exists"):
+        stack.registry.update_category(first["category_id"], name="Beta")
+
+
+def test_registry_category_edit_keeps_own_name_and_prefix(stack):
+    # Re-saving a category unchanged must not trip the duplicate checks.
+    created = stack.registry.add_custom_category("Same Name", prefix="SMN")
+    updated = stack.registry.update_category(created["category_id"])
+    assert updated["category_name"] == "Same Name"
+    assert updated["prefix"] == "SMN"
+
+
+def test_registry_category_edit_prefix_collision_refused(stack):
+    first = stack.registry.add_custom_category("Mine", prefix="MIN")
+    stack.registry.add_custom_category("Other", prefix="OTH")
+    with pytest.raises(ValidationError, match="already used by"):
+        stack.registry.update_category(first["category_id"], prefix="OTH")
+
+
+def test_registry_category_edit_rejects_bad_values(stack):
+    created = stack.registry.add_custom_category("Validate Me",
+                                                 prefix="VAL")
+    with pytest.raises(ValidationError, match="prefix"):
+        stack.registry.update_category(created["category_id"],
+                                       prefix="lowercase")
+    with pytest.raises(ValidationError, match="non-empty"):
+        stack.registry.update_category(created["category_id"], name="  ")
+    with pytest.raises(ValidationError, match="sequence_padding"):
+        stack.registry.update_category(created["category_id"],
+                                       sequence_padding=0)
+
+
+def test_registry_category_edit_leaves_no_partial_state(stack):
+    created = stack.registry.add_custom_category("Atomic", prefix="AT")
+    with pytest.raises(ValidationError):
+        stack.registry.update_category(created["category_id"],
+                                       prefix="lowercase")
+    # the failed edit left the stored record exactly as it was
+    stored = stack.registry.get_category(created["category_id"])
+    assert stored.prefix == "AT"
+    assert stored.category_name == "Atomic"
+
+
+def test_registry_category_edit_does_not_touch_seed_tables(stack):
+    seed_file = (Path(__file__).parent.parent / "qs_engine" /
+                 "master_data" / "tables" / "materials.json")
+    before = seed_file.read_bytes()
+    created = stack.registry.add_custom_category("Safe Edit", prefix="SEF")
+    stack.registry.update_category(created["category_id"], name="Safe Edit 2")
+    assert seed_file.read_bytes() == before
+
+
 # --- UI policy modes (SLUG removed) -------------------------------------------
 
 def test_slug_not_in_ui_policy_modes():

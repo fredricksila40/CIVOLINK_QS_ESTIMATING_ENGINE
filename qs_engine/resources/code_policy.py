@@ -417,12 +417,17 @@ class MaterialCodePolicy:
                 raise ValidationError(
                     f"Invalid sequence padding {padding!r}; "
                     f"must be a positive integer")
+        # Key presence decides None ("inherit") vs "" ("no separator") —
+        # `or None` would silently turn an explicit empty separator back
+        # into the default "-" on the next load.
+        separator_raw = data.get(MATERIAL_CODE_SEPARATOR_FIELD, None)
         return cls.parse(
             mode,
             data.get(MATERIAL_CODE_PREFIX_FIELD, ""),
             format_template=data.get(MATERIAL_CODE_TEMPLATE_FIELD) or None,
             sequence_padding=padding_int,
-            separator=data.get(MATERIAL_CODE_SEPARATOR_FIELD) or None,
+            separator=None if separator_raw is None
+            else str(separator_raw),
         )
 
     def project_fields(self) -> dict:

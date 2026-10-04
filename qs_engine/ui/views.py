@@ -1104,7 +1104,7 @@ def _catalogue_row(record, policy=None, seed_records=None) -> tuple:
     )
 
 
-def material_catalogue_rows(repository, policy=None) -> list:
+def material_catalogue_rows(repository, policy=None, *, hidden=None) -> list:
     """Master-data material rows for the read-only catalogue grid.
 
     Density and wastage show an em-dash where master data holds nulls
@@ -1113,14 +1113,41 @@ def material_catalogue_rows(repository, policy=None) -> list:
     supplied, un-customized seed rows render its structured display
     code instead of the raw seed slug; user rows always render the
     user's editable code.
+
+    ``hidden`` — an optional iterable of keys the operator removed from
+    the catalogue (the reversible seed-hide overlay); those rows are
+    skipped here only, never at the resolver, so existing estimates
+    keep resolving them. Display codes are computed over the FULL
+    catalogue first — a hidden row keeps its slot, so removal never
+    renumbers (and thus re-points) the rows that stay.
     """
+    hidden_keys = frozenset(hidden or ())
     records = list(repository.list("materials"))
+    shown = [record for record in records
+             if str(record.get("key", "")) not in hidden_keys]
     seed_records = None
     if policy is not None:
         seed_records = [record for record in records
                         if not str(record.get("key", "")).startswith("user:")]
     return [_catalogue_row(record, policy=policy, seed_records=seed_records)
-            for record in records]
+            for record in shown]
+
+
+def catalogue_hidden_keys(app) -> frozenset:
+    """Seed keys removed from the catalogue view by the operator.
+
+    Empty when the session has no writable material store — a
+    read-only session simply shows the shipped catalogue as-is.
+    Never raises: catalogue display must not fail on overlay trouble.
+    """
+    stack = getattr(app, "material_stack", None)
+    store = getattr(stack, "store", None) if stack is not None else None
+    if store is None:
+        return frozenset()
+    try:
+        return frozenset(store.hidden_seed_keys())
+    except Exception:
+        return frozenset()
 
 
 def material_details_text(record) -> str:
@@ -1332,7 +1359,10 @@ def material_code_preview(label, custom_prefix, template, sequence_padding,
             custom_prefix,
             format_template=str(template or "").strip() or None,
             sequence_padding=padding,
-            separator=separator or None,
+            # An empty separator is a real choice (AGG001, matching the
+            # category registry's SEPARATOR_RE); only None inherits the
+            # default. Coercing "" here would make the preview lie.
+            separator=separator,
         )
         code = policy.suggest("Preview Material", category="aggregate")
     except ValidationError:
@@ -1345,6 +1375,54 @@ def material_code_preview(label, custom_prefix, template, sequence_padding,
         # instead of an apparently valid code.
         return "(invalid template)"
     return code
+
+
+def preview_hint(code, label, template, separator) -> str:
+    """Accuracy notes for the Material Coding Configuration preview.
+
+    The preview itself stays a single generated code (its exact
+    strings are a pinned contract); this line carries what one code
+    cannot say on its own: tokens that expand to the same value
+    (``{PREFIX}`` + ``{CATEGORY_ID}`` renders ``AGG_AGG_001``),
+    settings the active policy mode ignores, and explicit empty
+    choices (no separator -> ``AGG001``). Returns ``""`` when there
+    is nothing to say. Never alters the previewed code.
+    """
+    from qs_engine.core.errors import ValidationError
+    from qs_engine.resources import DEFAULT_TEMPLATE, mode_from_label
+    from qs_engine.resources.code_policy import SEQUENTIAL_NUMERIC
+
+    if code == "(invalid template)":
+        return ("Unusable pattern \u2014 check the tokens, separator, "
+                "and padding.")
+    if code == "(manual entry)":
+        return ("Manual mode: codes are typed by hand; the pattern is "
+                "not applied.")
+    if code == "(enter a custom prefix)":
+        return "Enter a Custom Prefix to preview a generated code."
+    try:
+        mode = mode_from_label(label)
+    except ValidationError:
+        return ""
+    template_text = str(template or "")
+    if mode == SEQUENTIAL_NUMERIC:
+        return ("Sequential Numeric mode emits a bare padded sequence; "
+                "the pattern and separator are not applied.")
+    notes = []
+    if "{PREFIX}" in template_text and "{CATEGORY_ID}" in template_text:
+        notes.append(
+            "Warning: {CATEGORY_ID} expands to the same value as "
+            "{PREFIX} here \u2014 drop one to avoid a doubled segment "
+            f"(this pattern renders {code}).")
+    if not template_text.strip():
+        notes.append("No pattern entered \u2014 the default "
+                     "{PREFIX}{SEPARATOR}{SEQUENCE} is used.")
+    effective = template_text.strip() or DEFAULT_TEMPLATE
+    if str(separator if separator is not None else "") == "" \
+            and "{SEPARATOR}" in effective:
+        notes.append("No separator \u2014 the parts render joined "
+                     f"({code}).")
+    return " ".join(notes)
 
 
 def gl_fields_for_selection(account_name, item_id="") -> dict:
@@ -1901,7 +1979,7 @@ def select_resource_dialog(parent, domain, repository, on_select=None):
     """
     try:
         dialog = tk.Toplevel(
-            parent if isinstance(parent, tk.Widget) else None)
+            parent if isinstance(parent, tk.Misc) else None)
     except tk.TclError:
         return None
     dialog.title(PICKER_TITLES.get(domain, "Select Resource"))
@@ -2035,15 +2113,20 @@ def catalogue_browser(parent, app, grid, status_label):
 
     def refresh(*_args):
         try:
-            records = app.repository.list("materials")
+            all_records = app.repository.list("materials")
         except Exception as exc:
             status_label.config(text=f"Could not load materials: {exc}")
             return
+        # Codes/ordinals derive from the FULL catalogue (a hidden row
+        # keeps its slot); hiding only narrows rows, search and counts.
+        hidden = catalogue_hidden_keys(app)
+        records = [record for record in all_records
+                   if str(record.get("key", "")) not in hidden]
         matches = filter_catalogue(
             records, search_var.get(),
             scope_var.get(), status_var.get())
         policy = active_material_code_policy(app)
-        seed_records = [record for record in matches
+        seed_records = [record for record in all_records
                         if not str(record.get("key", "")).startswith("user:")]
         refresh_grid(grid, [_catalogue_row(record, policy=policy,
                                            seed_records=seed_records)
@@ -2070,10 +2153,16 @@ def catalogue_browser(parent, app, grid, status_label):
     scope_var.trace_add("write", lambda *_a: refresh())
     status_var.trace_add("write", lambda *_a: refresh())
     grid.bind("<<TreeviewSelect>>", show_details, add="+")
+    # Page-level mutations (remove / restore) re-run the filtered view
+    # and the "N of M resources" count through the same path.
+    grid.bind("<<CatalogueChanged>>", refresh, add="+")
     try:
-        total = len(app.repository.list("materials"))
+        records = app.repository.list("materials")
     except Exception:
-        total = 0
+        records = []
+    hidden = catalogue_hidden_keys(app)
+    total = len([record for record in records
+                 if str(record.get("key", "")) not in hidden])
     count_label.config(text=f"{total} of {total} resources")
     return toolbar, details
 
@@ -3488,7 +3577,7 @@ def show_license_status(app=None):
         license_display,
     )
     service = _license_service_for(app)
-    master = app if isinstance(app, tk.Widget) else None
+    master = app if isinstance(app, tk.Misc) else None
     try:
         dialog = tk.Toplevel(master)
     except tk.TclError:
@@ -3562,7 +3651,7 @@ def show_license_activation(app=None):
     """License-key entry dialog (modeless; None when headless)."""
     from qs_engine.licensing.models import LicenseState, license_display
     service = _license_service_for(app)
-    master = app if isinstance(app, tk.Widget) else None
+    master = app if isinstance(app, tk.Misc) else None
     try:
         dialog = tk.Toplevel(master)
     except tk.TclError:
@@ -3948,6 +4037,7 @@ def build_project_page(body, app):
     from qs_engine.core.errors import ValidationError
     from qs_engine.resources import (
         CODE_PATTERN_PRESETS,
+        CodePatternEngine,
         DEFAULT_PADDING,
         DEFAULT_SEPARATOR,
         DEFAULT_TEMPLATE,
@@ -3991,54 +4081,86 @@ def build_project_page(body, app):
     fmt_frame.grid_columnconfigure(3, weight=1)
 
     ttk.Label(fmt_frame, text="Format Pattern Template", width=22).grid(
-        row=0, column=0, padx=(8, 2), pady=2, sticky="w")
+        row=0, column=0, padx=(8, 2), pady=(6, 2), sticky="w")
     template_var = tk.StringVar(
         value=active_policy.format_template or DEFAULT_TEMPLATE)
     template_entry = ttk.Entry(fmt_frame, textvariable=template_var, width=30)
-    template_entry.grid(row=0, column=1, padx=2, pady=2, sticky="ew")
-    ttk.Label(fmt_frame, text="Tokens: {PREFIX} {SEPARATOR} {SEQUENCE} "
-              "{CATEGORY_ID}", style="Status.TLabel",
-              wraplength=200, justify="left").grid(
-                  row=0, column=2, columnspan=2, padx=(2, 8), pady=2,
-                  sticky="w")
+    template_entry.grid(row=0, column=1, columnspan=3, padx=(2, 8),
+                        pady=(6, 2), sticky="ew")
+
+    # Token chips insert at the cursor; the spelling is read from the
+    # pattern engine, so a chip can never drift from a real token.
+    # (LabelFrame container: every direct panel child must expose
+    # -text for the UI regression test's caption scan.)
+    chip_group = ttk.LabelFrame(fmt_frame, text="Insert Token")
+    chip_group.grid(row=1, column=1, columnspan=3, padx=(2, 8), pady=2,
+                    sticky="ew")
+
+    def _insert_token(token):
+        try:
+            at_cursor = str(template_entry.focus_get()) == str(
+                template_entry)
+        except tk.TclError:
+            at_cursor = False
+        template_entry.insert("insert" if at_cursor else "end", token)
+        template_entry.focus_set()
+
+    for _chip_token in CodePatternEngine.SUPPORTED_TOKENS:
+        ttk.Button(chip_group, text=_chip_token,
+                   command=lambda t=_chip_token: _insert_token(t)).pack(
+                       side="left", padx=(0, 4), pady=2)
 
     ttk.Label(fmt_frame, text="Sequence Padding", width=22).grid(
-        row=1, column=0, padx=(8, 2), pady=2, sticky="w")
+        row=2, column=0, padx=(8, 2), pady=2, sticky="w")
     padding_var = tk.StringVar(
         value=str(active_policy.sequence_padding or DEFAULT_PADDING))
     padding_spin = ttk.Spinbox(
         fmt_frame, from_=1, to=10, width=5, textvariable=padding_var)
-    padding_spin.grid(row=1, column=1, padx=2, pady=2, sticky="w")
-    ttk.Label(fmt_frame, text="Separator", width=14).grid(
-        row=1, column=2, padx=(6, 2), pady=2, sticky="w")
+    padding_spin.grid(row=2, column=1, padx=2, pady=2, sticky="w")
+    ttk.Label(fmt_frame, text="Separator", width=8).grid(
+        row=2, column=2, padx=(6, 2), pady=2, sticky="w")
     separator_var = tk.StringVar(
         value=active_policy.separator if active_policy.separator is not None
         else DEFAULT_SEPARATOR)
     separator_entry = ttk.Entry(fmt_frame, textvariable=separator_var,
                                 width=5)
-    separator_entry.grid(row=1, column=3, padx=2, pady=2, sticky="w")
+    separator_entry.grid(row=2, column=3, padx=2, pady=2, sticky="w")
 
-    # Live preview
+    # Live preview — "Preview:" is directly followed by the preview
+    # label (their adjacency is pinned by the UI regression test).
     preview_var = tk.StringVar(value="")
     ttk.Label(fmt_frame, text="Preview:", width=22).grid(
-        row=2, column=0, padx=(8, 2), pady=2, sticky="w")
+        row=3, column=0, padx=(8, 2), pady=2, sticky="w")
     preview_label = ttk.Label(fmt_frame, textvariable=preview_var,
-                              style="Status.TLabel")
-    preview_label.grid(row=2, column=1, columnspan=3, padx=2, pady=2,
+                              style="Status.TLabel", font="TkFixedFont")
+    preview_label.grid(row=3, column=1, columnspan=3, padx=2, pady=2,
                        sticky="w")
+
+    # Accuracy notes: what one previewed code cannot say on its own
+    # (redundant tokens, settings a mode ignores, explicit empties).
+    hint_var = tk.StringVar(value="")
+    ttk.Label(fmt_frame, textvariable=hint_var, style="Status.TLabel",
+              wraplength=640, justify="left").grid(
+                  row=4, column=0, columnspan=4, padx=(8, 8), pady=(0, 6),
+                  sticky="w")
 
     def _update_preview(*_args):
         try:
             padding = int(padding_var.get())
         except (ValueError, TypeError):
             padding = DEFAULT_PADDING
-        preview_var.set(material_code_preview(
+        template_text = template_var.get()
+        separator_text = separator_var.get()
+        code = material_code_preview(
             policy_combo.get(),
             prefix_entry.get(),
-            template_var.get(),
+            template_text,
             padding,
-            separator_var.get(),
-        ))
+            separator_text,
+        )
+        preview_var.set(code)
+        hint_var.set(preview_hint(
+            code, policy_combo.get(), template_text, separator_text))
 
     template_var.trace_add("write", _update_preview)
     padding_var.trace_add("write", _update_preview)
@@ -4129,7 +4251,9 @@ def build_project_page(body, app):
                 prefix_entry.get(),
                 format_template=template_var.get().strip() or None,
                 sequence_padding=padding_val,
-                separator=separator_var.get() or None,
+                # "" is a real choice (no separator, AGG001); only an
+                # untouched "-" is stripped to None below ("inherit").
+                separator=separator_var.get(),
             )
             # The formatting controls pre-fill the *effective* defaults
             # (template/padding/separator) while MaterialCodePolicy()
@@ -4250,7 +4374,8 @@ def build_materials_page(body, app):
     def refresh_catalogue():
         try:
             refresh_grid(grid, material_catalogue_rows(
-                app.repository, policy=active_material_code_policy(app)))
+                app.repository, policy=active_material_code_policy(app),
+                hidden=catalogue_hidden_keys(app)))
         except Exception as exc:
             status.config(text=f"Could not load materials catalogue: {exc}")
 
@@ -4261,9 +4386,22 @@ def build_materials_page(body, app):
 
     def on_material_saved(record):
         refresh_materials_grid()
+        note = record.pop("_category_note", "")
         status.config(
             text=f"✓ Saved {record.get('code', record.get('key', ''))} — "
-                 f"seed catalogue untouched")
+                 f"seed catalogue untouched{note}")
+
+    def on_category_saved(record):
+        """A category edit changes the registry, not the grid's rows —
+        but codes/registry fields elsewhere (picker suggestions) read it
+        live, so refresh for consistency and confirm in the status line.
+        The SHIPPED seed tables are never written: a seed-category edit
+        persists as an override in the writable registry file.
+        """
+        refresh_materials_grid()
+        status.config(
+            text=f"✓ Saved category {record.get('category_name', '')} — "
+                 f"shipped seed tables untouched")
 
     def _require_stack():
         stack = getattr(app, "material_stack", None)
@@ -4305,10 +4443,108 @@ def build_materials_page(body, app):
                                    on_saved=on_material_saved,
                                    mode="customize_seed")
 
+    def on_edit_category():
+        """Edit the CATEGORY of the selected material.
+
+        Seed and user categories are both editable: the category editor
+        opens in place, and a seed-category edit is persisted as an
+        override while the shipped table stays untouched.
+        """
+        stack = _require_stack()
+        if stack is None:
+            return
+        selection = grid.selection()
+        if not selection:
+            status.config(text="Select a material to edit its category first.")
+            return
+        values = grid.item(selection[0], "values")
+        record = resolve_material_reference(app, str(values[0]))
+        if record is None:
+            status.config(text=f"Could not load record: {values[0]}")
+            return
+        registry = getattr(stack, "registry", None)
+        if registry is None:
+            status.config(text="Material editing unavailable: no category "
+                               "registry in this session")
+            return
+        category_ref = str(record.get("category", "")
+                           or record.get("category_name", "")).strip()
+        if not category_ref:
+            status.config(text="This material has no category to edit.")
+            return
+        try:
+            category = registry.resolve_category(category_ref)
+        except QSEngineError as exc:
+            status.config(text=f"Not saved: {exc}")
+            return
+        category_editor_dialog(app, registry, on_added=on_category_saved,
+                               category=category.to_dict())
+
+    def on_remove_selected():
+        """Remove the selected material from the catalogue (reversible).
+
+        User materials are soft-deleted through the store (fail closed
+        for new lookups); shipped materials get the view-level hide
+        overlay — the seed table is never written and existing
+        estimates keep resolving them. 'Restore Removed…' undoes either.
+        """
+        stack = _require_stack()
+        if stack is None:
+            return
+        selection = grid.selection()
+        if not selection:
+            status.config(text="Select a material to remove first.")
+            return
+        values = grid.item(selection[0], "values")
+        record = resolve_material_reference(app, str(values[0]))
+        if record is None:
+            status.config(text=f"Could not load record: {values[0]}")
+            return
+        key = str(record.get("key", ""))
+        name = str(record.get("name", "") or key)
+        try:
+            if key.startswith("user:"):
+                stack.store.deactivate_material(key)
+            else:
+                stack.store.hide_seed_material(key)
+        except QSEngineError as exc:
+            status.config(text=f"Could not remove {name}: {exc}")
+            return
+        refresh_catalogue()
+        grid.event_generate("<<CatalogueChanged>>")
+        status.config(
+            text=f"✓ Removed {name} from the catalogue — "
+                 f"'Restore Removed…' brings it back")
+
+    def on_restore_removed():
+        """Open the picker that puts removed materials back."""
+        stack = _require_stack()
+        if stack is None:
+            return
+        hidden = stack.store.hidden_seed_keys()
+        inactive = stack.store.inactive_materials()
+        if not hidden and not inactive:
+            status.config(text="Nothing to restore — no removed materials.")
+            return
+
+        def on_restored(count):
+            refresh_catalogue()
+            grid.event_generate("<<CatalogueChanged>>")
+            status.config(
+                text=f"✓ Restored {count} material(s) to the catalogue")
+
+        restore_removed_dialog(app, stack.store, on_restored=on_restored)
+
     ttk.Button(actions, text="Add Material…", style="Accent.TButton",
                command=on_add).pack(side="left", padx=(0, 6))
     ttk.Button(actions, text="Edit Selected",
-               command=on_edit_selected).pack(side="left")
+               command=on_edit_selected).pack(side="left", padx=(0, 6))
+    ttk.Button(actions, text="Edit Category",
+               command=on_edit_category).pack(side="left")
+    ttk.Button(actions, text="Remove Selected",
+               command=on_remove_selected).pack(side="left", padx=(6, 0))
+    ttk.Button(actions, text="Restore Removed…",
+               command=on_restore_removed).pack(side="left", padx=(6, 0))
 
     card = ttk.LabelFrame(body, text="Catalogue")
     card.pack(fill="both", expand=True, pady=(6, 0))
@@ -4319,7 +4555,8 @@ def build_materials_page(body, app):
     details.pack(fill="x", pady=(6, 0))
     try:
         refresh_grid(grid, material_catalogue_rows(
-            app.repository, policy=active_material_code_policy(app)))
+            app.repository, policy=active_material_code_policy(app),
+            hidden=catalogue_hidden_keys(app)))
     except Exception as exc:
         status.config(text=f"Could not load materials catalogue: {exc}")
     app.refresh_status()
@@ -4517,66 +4754,125 @@ def build_reconciliation_page(body, app):
     app.refresh_status()
 
 
-def category_editor_dialog(parent, registry, on_added=None):
-    """Create a user category ('+ Add Custom Category…').
+def category_formatting_defaults(parent=None):
+    """Default material-code formatting settings for a category.
 
-    Updates the effective category registry (seed + user) without ever
-    writing seed category data; duplicate/seed-shadowing names are
+    A category that overrides nothing inherits the project's *active*
+    policy (the Project Setup page's Material Code Formatting); when no
+    policy is resolvable from ``parent`` the shipped engine defaults
+    apply. Returns ``(template, padding, separator)`` with ``padding`` an
+    ``int`` — the same values the Project Setup controls pre-fill, so the
+    category editor can offer "Restore Defaults" without inventing a
+    shape of its own. Never raises: an unreadable policy falls back.
+    """
+    from qs_engine.resources import (
+        DEFAULT_PADDING,
+        DEFAULT_SEPARATOR,
+        DEFAULT_TEMPLATE,
+    )
+    try:
+        policy = active_material_code_policy(parent)
+    except Exception:
+        policy = None
+    template = getattr(policy, "format_template", None) or DEFAULT_TEMPLATE
+    padding = getattr(policy, "sequence_padding", None)
+    if padding is None:
+        padding = DEFAULT_PADDING
+    # An explicit empty separator ("AGG001") is a real choice, so only a
+    # None separator means "inherit" and takes the default.
+    separator = getattr(policy, "separator", None)
+    if separator is None:
+        separator = DEFAULT_SEPARATOR
+    return str(template), int(padding), str(separator)
+
+
+def category_editor_dialog(parent, registry, on_added=None, *,
+                           category=None):
+    """Create OR edit a material category (seed or user).
+
+    ``category=None`` opens the "+ Add Custom Category…" form. Passing an
+    existing record mapping (the catalogue's "Edit Category" button) opens
+    the same form pre-filled for editing: the title, button label, and
+    status copy change, and the save routes to
+    :meth:`CategoryRegistry.update_category` instead of
+    :meth:`~CategoryRegistry.add_custom_category`. The ``category_id``
+    is never edited, so a rename cannot re-point materials.
+
+    Updates the effective category registry (seed + user). Seed
+    categories are editable too — the edit persists as an override in
+    the writable registry file, and the shipped seed tables are NEVER
+    written. Duplicate/seed-shadowing names are
     rejected with a typed error shown in the dialog. Supports optional
     formatting parameters (prefix, GL code, GL description, template,
     padding, separator). Returns a handle dict, or None when headless.
     """
-    master = parent if isinstance(parent, tk.Widget) else None
+    editing = category is not None
+    master = parent if isinstance(parent, tk.Misc) else None
     try:
         dialog = tk.Toplevel(master)
     except tk.TclError:
         return None
-    dialog.title("Add Custom Category")
+    dialog.title("Edit Material Category" if editing
+                 else "Add Custom Category")
     if master is not None:
         dialog.transient(master)
     form = ttk.Frame(dialog, padding=12)
     form.pack(fill="both", expand=True)
     ttk.Label(form, text="Category name:").grid(
         row=0, column=0, sticky="w", pady=(0, 6))
-    name_var = tk.StringVar()
+    name_var = tk.StringVar(
+        master=dialog,
+        value=str(category.get("category_name", "") or "") if editing else "")
     name_entry = ttk.Entry(form, textvariable=name_var, width=32)
     name_entry.grid(row=0, column=1, sticky="we", pady=(0, 6), padx=(8, 0))
 
     ttk.Label(form, text="Prefix:").grid(
         row=1, column=0, sticky="w", pady=2)
-    prefix_var = tk.StringVar()
+    prefix_var = tk.StringVar(master=dialog)
     prefix_entry = ttk.Entry(form, textvariable=prefix_var, width=15)
     prefix_entry.grid(row=1, column=1, sticky="w", pady=2, padx=(8, 0))
+    if editing:
+        prefix_var.set(str(category.get("prefix", "") or ""))
 
     ttk.Label(form, text="SAP / GL Code:").grid(
         row=2, column=0, sticky="w", pady=2)
-    gl_var = tk.StringVar()
+    gl_var = tk.StringVar(master=dialog)
     gl_entry = ttk.Entry(form, textvariable=gl_var, width=15)
     gl_entry.grid(row=2, column=1, sticky="w", pady=2, padx=(8, 0))
+    if editing:
+        gl_var.set(str(category.get("sap_gl_code", "") or ""))
 
     ttk.Label(form, text="GL Description:").grid(
         row=3, column=0, sticky="w", pady=2)
-    gl_desc_var = tk.StringVar()
+    gl_desc_var = tk.StringVar(master=dialog)
     gl_desc_entry = ttk.Entry(form, textvariable=gl_desc_var, width=32)
     gl_desc_entry.grid(row=3, column=1, sticky="we", pady=2, padx=(8, 0))
+    if editing:
+        gl_desc_var.set(str(category.get("gl_description", "") or ""))
 
     ttk.Label(form, text="Format Template:").grid(
         row=4, column=0, sticky="w", pady=2)
-    template_var = tk.StringVar()
+    template_var = tk.StringVar(master=dialog)
     template_entry = ttk.Entry(form, textvariable=template_var, width=32)
     template_entry.grid(row=4, column=1, sticky="we", pady=2, padx=(8, 0))
+    if editing:
+        template_var.set(str(category.get("format_template", "") or ""))
 
     ttk.Label(form, text="Sequence Padding:").grid(
         row=5, column=0, sticky="w", pady=2)
-    padding_var = tk.StringVar()
+    padding_var = tk.StringVar(master=dialog)
     padding_entry = ttk.Entry(form, textvariable=padding_var, width=5)
     padding_entry.grid(row=5, column=1, sticky="w", pady=2, padx=(8, 0))
+    if editing and category.get("sequence_padding") is not None:
+        padding_var.set(str(category.get("sequence_padding")))
 
     ttk.Label(form, text="Separator:").grid(
         row=6, column=0, sticky="w", pady=2)
-    separator_var = tk.StringVar()
+    separator_var = tk.StringVar(master=dialog)
     separator_entry = ttk.Entry(form, textvariable=separator_var, width=5)
     separator_entry.grid(row=6, column=1, sticky="w", pady=2, padx=(8, 0))
+    if editing:
+        separator_var.set(str(category.get("separator", "") or ""))
 
     status = ttk.Label(form, text="", style="Status.TLabel",
                        wraplength=340, justify="left")
@@ -4599,17 +4895,33 @@ def category_editor_dialog(parent, registry, on_added=None):
                     raise ValidationError(
                         f"Sequence padding must be a positive integer; "
                         f"got {padding_raw!r}")
-            record = registry.add_custom_category(
-                name_var.get(),
-                prefix=prefix_var.get(),
-                sap_gl_code=gl_var.get(),
-                gl_description=gl_desc_var.get(),
-                format_template=template_var.get().strip() or None,
-                sequence_padding=padding_val,
-                separator=separator_var.get() or None,
-            )
+            if editing:
+                # Update in place: the stable category_id is passed, never
+                # re-derived, so a rename can never re-point a material.
+                record = registry.update_category(
+                    str(category.get("category_id", "")),
+                    name=name_var.get(),
+                    prefix=prefix_var.get(),
+                    sap_gl_code=gl_var.get(),
+                    gl_description=gl_desc_var.get(),
+                    format_template=template_var.get().strip() or None,
+                    sequence_padding=padding_val,
+                    separator=separator_var.get() or None,
+                )
+            else:
+                record = registry.add_custom_category(
+                    name_var.get(),
+                    prefix=prefix_var.get(),
+                    sap_gl_code=gl_var.get(),
+                    gl_description=gl_desc_var.get(),
+                    format_template=template_var.get().strip() or None,
+                    sequence_padding=padding_val,
+                    separator=separator_var.get() or None,
+                )
         except QSEngineError as exc:
-            status.config(text=f"Not added: {exc}")
+            # Fail closed in the dialog — never a partial or silent save.
+            status.config(text=f"Not {'saved' if editing else 'added'}: "
+                               f"{exc}")
             return
         handle["result"] = record
         if on_added is not None:
@@ -4621,14 +4933,125 @@ def category_editor_dialog(parent, registry, on_added=None):
 
     buttons = ttk.Frame(form)
     buttons.grid(row=8, column=0, columnspan=2, sticky="e")
-    add_button = ttk.Button(buttons, text="Add Category",
-                            style="Accent.TButton", command=_add)
+    add_button = ttk.Button(
+        buttons, text="Save Category" if editing else "Add Category",
+        style="Accent.TButton", command=_add)
     add_button.pack(side="left", padx=(0, 6))
     cancel_button = ttk.Button(buttons, text="Cancel", command=_cancel)
     cancel_button.pack(side="left")
     handle["add"] = add_button
     handle["cancel"] = cancel_button
     name_entry.focus_set()
+    return handle
+
+
+def restore_removed_dialog(parent, store, on_restored=None):
+    """Picker that puts removed materials back into the catalogue.
+
+    Lists every removable-and-removed row: shipped materials hidden by
+    the view overlay (kind ``seed``) and soft-deleted user materials
+    (kind ``user``). Restoring one reverts exactly that removal — the
+    seed table is never written either way. Supports multi-selection;
+    "Restore All" takes everything. Returns a handle dict (``result``
+    is the restored count), or None when headless.
+    """
+    master = parent if isinstance(parent, tk.Misc) else None
+    entries = []
+    repository = getattr(parent, "repository", None)
+    for key in store.hidden_seed_keys():
+        label = str(key)
+        if repository is not None:
+            try:
+                record = repository.get("materials", key)
+                label = str(record.get("name", "") or key)
+            except Exception:
+                pass  # stale overlay key: show the raw key, honest
+        entries.append({"key": str(key), "kind": "seed",
+                        "label": f"{label} (default material)"})
+    for record in store.inactive_materials():
+        key = str(record.get("key", ""))
+        entries.append({"key": key, "kind": "user",
+                        "label": f"{record.get('name', '')} (user material)"})
+    try:
+        dialog = tk.Toplevel(master)
+    except tk.TclError:
+        return None
+    dialog.title("Restore Removed Materials")
+    if master is not None:
+        dialog.transient(master)
+    form = ttk.Frame(dialog, padding=12)
+    form.pack(fill="both", expand=True)
+    ttk.Label(form, text="Materials removed from the catalogue:").pack(
+        anchor="w")
+    listbox = tk.Listbox(form, selectmode="extended",
+                         height=min(10, max(3, len(entries))),
+                         exportselection=False, width=48)
+    for entry in entries:
+        listbox.insert("end", entry["label"])
+    listbox.pack(fill="both", expand=True, pady=(4, 8))
+    status = ttk.Label(form, text="", style="Status.TLabel",
+                       wraplength=340, justify="left")
+    status.pack(anchor="w", pady=(0, 8))
+    handle = {"dialog": dialog, "listbox": listbox, "status": status,
+              "entries": list(entries), "result": None}
+
+    def _restore(keys):
+        restored = 0
+        for key in keys:
+            entry = next((item for item in entries
+                          if item["key"] == key), None)
+            if entry is None:
+                continue
+            try:
+                if entry["kind"] == "user":
+                    store.reactivate_material(key)
+                else:
+                    store.unhide_seed_material(key)
+            except QSEngineError as exc:
+                # Fail closed mid-way: everything already restored stays
+                # restored; the dialog reports the first failure.
+                status.config(text=f"Not restored ({key}): {exc}")
+                handle["result"] = restored
+                return
+            restored += 1
+        handle["result"] = restored
+        if on_restored is not None:
+            on_restored(restored)
+        dialog.destroy()
+
+    def _restore_selected():
+        selection = listbox.curselection()
+        if not selection:
+            status.config(text="Select at least one material to restore.")
+            return
+        _restore([entries[index]["key"] for index in selection])
+
+    def _restore_all():
+        _restore([entry["key"] for entry in entries])
+
+    def _cancel():
+        dialog.destroy()
+
+    buttons = ttk.Frame(form)
+    buttons.pack(anchor="e")
+    restore_button = ttk.Button(
+        buttons, text="Restore Selected", style="Accent.TButton",
+        state="disabled" if not entries else "normal",
+        command=_restore_selected)
+    restore_button.pack(side="left", padx=(0, 6))
+    restore_all_button = ttk.Button(
+        buttons, text="Restore All",
+        state="disabled" if not entries else "normal",
+        command=_restore_all)
+    restore_all_button.pack(side="left", padx=(0, 6))
+    cancel_button = ttk.Button(buttons, text="Cancel", command=_cancel)
+    cancel_button.pack(side="left")
+    handle["restore"] = restore_button
+    handle["restore_all"] = restore_all_button
+    handle["cancel"] = cancel_button
+    if not entries:
+        status.config(text="Nothing to restore.")
+    listbox.focus_set()
     return handle
 
 
@@ -4784,7 +5207,10 @@ def material_editor_dialog(app, record=None, on_saved=None, *, mode=None):
       informational banner stating the seed catalogue stays read-only.
 
     Editable fields: Material Name, Material Code (unless disabled),
-    Category, Default Unit. The suggested code follows the project's
+    Category, Default Unit, plus the category's binding fields (Prefix,
+    SAP / GL Code, GL Description) — the latter save back to the
+    CATEGORY itself (seed or user), never to the material. The
+    suggested code follows the project's
     active policy (``qs_engine.resources.code_policy``) — no hardcoded
     ``MAT-`` formatting anywhere, so a redundant prefix can never be
     concatenated onto an already-prefixed suggestion. Engineering
@@ -4801,7 +5227,7 @@ def material_editor_dialog(app, record=None, on_saved=None, *, mode=None):
     registry = getattr(stack, "registry", None) if stack is not None else None
     if store is None or registry is None:
         return None
-    parent = app if isinstance(app, tk.Widget) else None
+    parent = app if isinstance(app, tk.Misc) else None
     try:
         dialog = tk.Toplevel(parent)
     except tk.TclError:
@@ -4835,11 +5261,14 @@ def material_editor_dialog(app, record=None, on_saved=None, *, mode=None):
 
     prefill = record if mode != "add" else None
     name_var = tk.StringVar(
+        master=dialog,
         value=str(prefill.get("name", "")) if prefill is not None else "")
     code_var = tk.StringVar(
+        master=dialog,
         value=(str(prefill.get("code", ""))
                if mode == "edit_user" and prefill is not None else ""))
     unit_var = tk.StringVar(
+        master=dialog,
         value=str(prefill.get("unit", "")) if prefill is not None else "")
 
     ttk.Label(form, text="Material Name:").grid(
@@ -4865,24 +5294,22 @@ def material_editor_dialog(app, record=None, on_saved=None, *, mode=None):
     if unit_var.get():
         unit_combo.set(unit_var.get())
 
-    # Auto-populated registry fields (read-only)
+    # Registry binding fields (editable — saved back to the CATEGORY the
+    # material points at, seed or user alike)
     ttk.Label(form, text="Prefix:").grid(
         row=4, column=0, sticky="w", pady=2)
-    prefix_var = tk.StringVar(value="")
-    prefix_entry = ttk.Entry(form, textvariable=prefix_var, width=15,
-                             state="readonly")
+    prefix_var = tk.StringVar(master=dialog, value="")
+    prefix_entry = ttk.Entry(form, textvariable=prefix_var, width=15)
     prefix_entry.grid(row=4, column=1, sticky="w", pady=2, padx=(8, 0))
     ttk.Label(form, text="SAP / GL Code:").grid(
         row=5, column=0, sticky="w", pady=2)
-    gl_var = tk.StringVar(value="")
-    gl_entry = ttk.Entry(form, textvariable=gl_var, width=15,
-                         state="readonly")
+    gl_var = tk.StringVar(master=dialog, value="")
+    gl_entry = ttk.Entry(form, textvariable=gl_var, width=15)
     gl_entry.grid(row=5, column=1, sticky="w", pady=2, padx=(8, 0))
     ttk.Label(form, text="GL Description:").grid(
         row=6, column=0, sticky="w", pady=2)
-    gl_desc_var = tk.StringVar(value="")
-    gl_desc_entry = ttk.Entry(form, textvariable=gl_desc_var, width=40,
-                              state="readonly")
+    gl_desc_var = tk.StringVar(master=dialog, value="")
+    gl_desc_entry = ttk.Entry(form, textvariable=gl_desc_var, width=40)
     gl_desc_entry.grid(row=6, column=1, sticky="we", pady=2, padx=(8, 0))
 
     next_row = 7
@@ -4971,17 +5398,31 @@ def material_editor_dialog(app, record=None, on_saved=None, *, mode=None):
         nonlocal code_dirty
         code_dirty = True
 
+    binding_baseline = {"prefix": "", "sap_gl_code": "",
+                        "gl_description": ""}
+
     def _update_registry_fields():
-        """Auto-populate read-only registry fields from the selected category."""
+        """Populate the category binding fields from the selected category.
+
+        The baseline travels with the fields so ``_save`` only writes a
+        registry edit when Prefix / SAP-GL / GL Description actually
+        changed — a plain material save never rewrites the category.
+        """
         try:
             cat = registry.resolve_category(_category_ref())
-            prefix_var.set(cat.prefix)
-            gl_var.set(cat.sap_gl_code)
-            gl_desc_var.set(cat.gl_description)
+            prefix_var.set(cat.prefix or "")
+            gl_var.set(cat.sap_gl_code or "")
+            gl_desc_var.set(cat.gl_description or "")
+            binding_baseline["prefix"] = cat.prefix or ""
+            binding_baseline["sap_gl_code"] = cat.sap_gl_code or ""
+            binding_baseline["gl_description"] = cat.gl_description or ""
         except Exception:
             prefix_var.set("")
             gl_var.set("")
             gl_desc_var.set("")
+            binding_baseline["prefix"] = ""
+            binding_baseline["sap_gl_code"] = ""
+            binding_baseline["gl_description"] = ""
 
     def on_category_selected(_event=None):
         picked = category_combo.get()
@@ -5012,7 +5453,25 @@ def material_editor_dialog(app, record=None, on_saved=None, *, mode=None):
             # Disabled code fields never submit; every other path sends
             # the shown code (assigned suggestion or user's entry).
             dto["code"] = code_var.get()
+        # Binding edits (Prefix / SAP-GL / GL Description) target the
+        # CATEGORY the material points at — seed or user — never the
+        # material itself. Written first so a rejected binding (bad
+        # prefix, colliding prefix/name) fails the whole dialog closed
+        # instead of half-saving.
+        binding_changed = (
+            prefix_var.get() != binding_baseline["prefix"]
+            or gl_var.get() != binding_baseline["sap_gl_code"]
+            or gl_desc_var.get() != binding_baseline["gl_description"])
+        binding_written = False
         try:
+            if binding_changed:
+                target = registry.resolve_category(_category_ref())
+                registry.update_category(
+                    target.category_id,
+                    prefix=prefix_var.get(),
+                    sap_gl_code=gl_var.get(),
+                    gl_description=gl_desc_var.get())
+                binding_written = True
             if mode == "edit_user":
                 # User material update -> update_material (identity kept;
                 # a changed code retires the old one into aliases).
@@ -5022,12 +5481,26 @@ def material_editor_dialog(app, record=None, on_saved=None, *, mode=None):
                 # override through add_material — seed stays read-only.
                 saved = store.add_material(dto)
         except QSEngineError as exc:
+            if binding_written:
+                # Best-effort rollback: a rejected material save leaves
+                # no half-applied category edit behind.
+                try:
+                    registry.update_category(
+                        target.category_id,
+                        prefix=binding_baseline["prefix"],
+                        sap_gl_code=binding_baseline["sap_gl_code"],
+                        gl_description=binding_baseline["gl_description"])
+                except QSEngineError:
+                    pass
             # Fail closed in the dialog — never a partial or silent save.
             status.config(text=f"Not saved: {exc}")
             return
+        if binding_written:
+            saved["_category_note"] = " — category binding updated"
         handle["result"] = saved
         if on_saved is not None:
             on_saved(saved)
+        saved.pop("_category_note", None)
         dialog.destroy()
 
     def _cancel():
@@ -6338,7 +6811,11 @@ MATERIALS_GUIDE_TEXT = (
     "densities, wastage defaults, and verification state; em-dashes "
     "mark nulls; pricing arrives per call through the Rate Builder — "
     "no universal price library exists. Select a row for details, "
-    "or send a material to the Rate Builder."
+    "or send a material to the Rate Builder. \"Edit Selected\" edits a "
+    "user material (or creates an override of a seed row); \"Edit "
+    "Category\" edits the category of the selected row — seed "
+    "categories stay read-only master data, so only custom categories "
+    "can be edited."
 )
 ESTIMATE_GUIDE_TEXT = (
     "Cost summary rolled up from the last compiled BOQ: cost "

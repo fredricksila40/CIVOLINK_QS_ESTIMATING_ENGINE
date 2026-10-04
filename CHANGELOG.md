@@ -62,10 +62,24 @@
   `table_version` / `list` / `get` surface as `MasterDataRepository`, so
   rates, material resolution, exports and the CLI consume the merged
   seed + user catalogue with zero call-site changes.
-- **UI**: the Materials page gains "Add Material…" / "Edit Selected" plus a
+- **UI**: the Materials page gains "Add Material…" / "Edit Selected" / "Edit Category" plus a
   material dialog (name, generated code, category including
   "+ Add Custom Category…", unit) and a custom-category dialog. Seed rows
   remain read-only.
+- **Category editing** (`CategoryRegistry.update_category`): an existing
+  user category can be renamed and its prefix, SAP/GL account binding, and
+  code-formatting parameters (template, padding, separator) edited in place.
+  The stable `category_id` never changes, so a rename can never silently
+  re-point materials; omitted fields keep their value and an explicit
+  `None` clears an optional format back to the project default. Seed
+  categories fail closed as read-only master data, and a failed write rolls
+  the registry back so a partial edit is never observable.
+- **"Edit Category" button**: sits beside "Edit Selected" on the Materials
+  page and edits the *category* of the selected row, opening the category
+  dialog pre-filled ("Save Category"). It routes by provenance — user
+  categories open the editor; seed categories report that they stay
+  read-only rather than being shadowed. The catalogue grid itself remains
+  read-only (`ttk.Entry` still appears nowhere on the page).
 - **Fail-closed behaviour**: unknown units, duplicate/reserved codes, and
   malformed or future-schema override files raise typed errors surfaced in
   the dialog (`Not saved: …`) — never a partial or silent save. Because user

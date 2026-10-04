@@ -19,12 +19,18 @@ account binding, format template, sequence padding, separator) that
 drive the dynamic code generation engine. Seed categories inherit these
 from the seed materials table; user categories may specify custom values
 or inherit project defaults (None).
+
+Both kinds are editable through :meth:`CategoryRegistry.update_category`.
+A seed-category edit NEVER writes the shipped table: it persists as an
+**override** in the writable registry file and is merged over the
+derived seed record on every read, so the stable id and ``seed`` source
+are kept and materials resolve exactly as before.
 """
 
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
@@ -47,6 +53,17 @@ PREFIX_RE = re.compile(r"^[A-Z0-9]{1,8}$")
 
 #: Separator pattern: single delimiter character.
 SEPARATOR_RE = re.compile(r"^[-/._]?$")
+
+#: Sentinel separating "argument omitted" (keep the current value) from
+#: an explicit ``None`` (clear a formatting field back to the project
+#: default). A category legitimately stores ``None`` formatting, so
+#: omission can never be spelled ``None`` on an update.
+UNSET = object()
+
+#: Registry-file key carrying operator edits to the shipped (seed)
+#: categories. Seed files are never written: an entry here overrides
+#: the derived fields of the seed category it names.
+OVERRIDES_KEY = "overrides"
 
 
 @dataclass(frozen=True)
@@ -172,12 +189,13 @@ class CategoryRegistry:
     # -- persistence ---------------------------------------------------------
 
     def _load(self) -> None:
-        """Load user categories; missing file = none (empty, not an error).
+        """Load user categories and seed overrides; missing file = none.
 
         Malformed or version-unknown files fail closed with a typed error
         — never a partial or half-migrated category list.
         """
         self._user = {}
+        self._overrides = {}
         if not self.path.exists():
             return
         try:
@@ -201,6 +219,14 @@ class CategoryRegistry:
                 f"'categories' must be a list")
         for record in categories:
             self._user[self._validate_user_record(record)] = dict(record)
+        overrides = payload.get(OVERRIDES_KEY, [])
+        if not isinstance(overrides, list):
+            raise ValidationError(
+                f"User category registry {self.path}: "
+                f"'{OVERRIDES_KEY}' must be a list")
+        for record in overrides:
+            override = self._validate_override_record(record)
+            self._overrides[override["category_id"]] = override
 
     def _validate_user_record(self, record) -> str:
         if not isinstance(record, Mapping):
@@ -241,12 +267,81 @@ class CategoryRegistry:
                     f"delimiter character (-, /, ., _) or empty")
         return category_id
 
+    def _validate_override_record(self, record) -> dict:
+        """Validate one seed-category override; returns it canonicalized.
+
+        An override may only target a shipped (seed) category id and
+        carries its editable fields — never ``source``, so an override
+        can adjust a seed category but never claim to replace it. A
+        user-category id in this slot fails closed (user categories are
+        edited in place through ``categories``).
+        """
+        if not isinstance(record, Mapping):
+            raise ValidationError(
+                f"User category registry {self.path}: override must be "
+                f"a mapping")
+        category_id = str(record.get("category_id", "") or "").strip()
+        if not category_id:
+            raise ValidationError(
+                f"User category registry {self.path}: override is missing "
+                f"a category_id")
+        if category_id.startswith(USER_CATEGORY_PREFIX):
+            raise ValidationError(
+                f"User category registry {self.path}: override "
+                f"{category_id!r} may not target a user category (user "
+                f"categories are edited in place)")
+        canonical = {"category_id": category_id}
+        if "category_name" in record and record["category_name"] is not None:
+            canonical["category_name"] = _validate_name(
+                record["category_name"])
+        for key in ("prefix", "sap_gl_code", "gl_description",
+                    "format_template", "sequence_padding", "separator"):
+            if key not in record:
+                continue
+            value = record[key]
+            if value is None:
+                canonical[key] = None  # explicit clear
+                continue
+            if key == "sequence_padding":
+                if (not isinstance(value, int) or isinstance(value, bool)
+                        or value < 1):
+                    raise ValidationError(
+                        f"User category registry {self.path}: override "
+                        f"{category_id!r} sequence_padding must be a "
+                        f"positive integer")
+                canonical[key] = value
+            elif key == "separator":
+                sep = str(value)
+                if not SEPARATOR_RE.match(sep):
+                    raise ValidationError(
+                        f"User category registry {self.path}: override "
+                        f"{category_id!r} separator {sep!r} must be a "
+                        f"single delimiter character (-, /, ., _) or empty")
+                canonical[key] = sep
+            elif key == "prefix":
+                text = str(value).strip().upper()
+                if text and not PREFIX_RE.match(text):
+                    raise ValidationError(
+                        f"User category registry {self.path}: override "
+                        f"{category_id!r} prefix {text!r} must be 1-8 "
+                        f"uppercase alphanumeric characters")
+                canonical[key] = text
+            else:
+                canonical[key] = str(value)
+        if len(canonical) == 1:
+            raise ValidationError(
+                f"User category registry {self.path}: override "
+                f"{category_id!r} carries no editable fields")
+        return canonical
+
     def _persist(self) -> None:
         payload = {
             "schema_version": SCHEMA_VERSION,
             "updated_on": date.today().isoformat(),
             "categories": [dict(self._user[key])
                            for key in sorted(self._user)],
+            OVERRIDES_KEY: [dict(self._overrides[key])
+                            for key in sorted(self._overrides)],
         }
         # Categories now carry formatting parameters; ensure they persist.
         try:
@@ -271,7 +366,9 @@ class CategoryRegistry:
         """Seed categories derived from the read-only materials table.
 
         Prefix, GL code, and GL description are inherited from the
-        first seed material in each category that carries them.
+        first seed material in each category that carries them, then
+        adjusted by any operator override saved for that category —
+        the shipped table itself is never written.
         """
         derived: Dict[str, CategoryRecord] = {}
         for record in self._seed.list("materials"):
@@ -291,6 +388,13 @@ class CategoryRegistry:
                 gl_description=gl_desc,
                 source="seed",
             )
+        for category_id in sorted(self._overrides):
+            if category_id not in derived:
+                continue  # override for a category the catalogue no longer ships
+            fields = {key: value for key, value
+                      in self._overrides[category_id].items()
+                      if key != "category_id"}
+            derived[category_id] = replace(derived[category_id], **fields)
         return derived
 
     # -- public API ------------------------------------------------------------
@@ -412,6 +516,214 @@ class CategoryRegistry:
             self._persist()
         except ValidationError:
             self._user.pop(category_id, None)
+            raise
+        return record.to_dict()
+
+    def update_category(self, category_id, *, name=UNSET, prefix=UNSET,
+                        sap_gl_code=UNSET, gl_description=UNSET,
+                        format_template=UNSET, sequence_padding=UNSET,
+                        separator=UNSET) -> dict:
+        """Edit an existing category — seed OR user; returns the record.
+
+        Preexisting (seed) categories are editable by default: the edit
+        is validated exactly like a user-category edit and persisted as
+        an override in the writable registry file. The shipped seed
+        table is NEVER written, and the category keeps its stable id
+        and ``seed`` source, so every material referencing it keeps
+        resolving exactly as before.
+
+        User categories are edited in place under their ``user:``
+        namespace; an id that is neither seed nor user fails closed
+        instead of silently creating anything.
+
+        The ``category_id`` NEVER changes — every material that references
+        a category stores that stable id, so a rename here can never
+        silently re-point an existing material at a different category.
+        Omitted arguments keep their current value; an explicit ``None``
+        clears an optional formatting field back to the project default.
+
+        Validated exactly like creation: non-empty bounded names, names
+        that would shadow another category, well-formed and unique
+        prefixes, positive padding, and a single-character separator. A
+        failed write rolls the in-memory registry back, so a partial
+        edit is never observable.
+        """
+        category_id = str(category_id or "").strip()
+        seed = self._seed_categories()
+        if category_id in seed:
+            return self._update_seed_category(
+                category_id, name=name, prefix=prefix,
+                sap_gl_code=sap_gl_code, gl_description=gl_description,
+                format_template=format_template,
+                sequence_padding=sequence_padding, separator=separator)
+        if not category_id.startswith(USER_CATEGORY_PREFIX):
+            raise ValidationError(
+                f"Unknown material category {category_id!r}")
+        if category_id not in self._user:
+            raise ValidationError(
+                f"Unknown user material category {category_id!r}")
+        current = CategoryRecord.from_dict(self._user[category_id])
+
+        if name is UNSET:
+            text_name = current.category_name
+        else:
+            text_name = _validate_name(name)
+            seed = self._seed_categories()
+            slug = _slugify(text_name)
+            for key in sorted(seed):
+                if (text_name.casefold() == seed[key].category_name.casefold()
+                        or slug == key):
+                    raise ValidationError(
+                        f"Category {text_name!r} would shadow seed category "
+                        f"{seed[key].category_name!r}; choose a different "
+                        f"name (seed categories cannot be replaced by user "
+                        f"data)")
+            for key in sorted(self._user):
+                if (key != category_id
+                        and self._user[key].get("category_name", "").casefold()
+                        == text_name.casefold()):
+                    raise ValidationError(
+                        f"Category {text_name!r} already exists in the user "
+                        f"registry")
+
+        if prefix is UNSET:
+            prefix_clean = current.prefix
+        else:
+            prefix_clean = str(prefix or "").strip().upper()
+            if prefix_clean:
+                if not PREFIX_RE.match(prefix_clean):
+                    raise ValidationError(
+                        f"Category prefix {prefix_clean!r} must be 1-8 "
+                        f"uppercase alphanumeric characters")
+                existing = self.get_category_by_prefix(prefix_clean)
+                # The category's OWN current prefix is not a collision —
+                # only another category holding it blocks the edit.
+                if (existing is not None
+                        and existing.category_id != category_id):
+                    raise ValidationError(
+                        f"Category prefix {prefix_clean!r} is already used by "
+                        f"category {existing.category_id!r}")
+
+        record = CategoryRecord(
+            category_id=category_id,
+            category_name=text_name,
+            prefix=prefix_clean,
+            sap_gl_code=(current.sap_gl_code if sap_gl_code is UNSET
+                         else str(sap_gl_code or "").strip()
+                         or NEEDS_VERIFICATION),
+            gl_description=(current.gl_description if gl_description is UNSET
+                            else str(gl_description or "").strip()
+                            or NEEDS_VERIFICATION),
+            format_template=(current.format_template
+                             if format_template is UNSET
+                             else format_template),
+            sequence_padding=(current.sequence_padding
+                              if sequence_padding is UNSET
+                              else sequence_padding),
+            separator=(current.separator if separator is UNSET
+                       else separator),
+            source=USER_SOURCE,
+        )
+        # CategoryRecord.__post_init__ has already rejected a malformed
+        # prefix/padding/separator; validate the name too so a bad edit
+        # is caught before anything is written.
+        _validate_name(record.category_name)
+        self._user[category_id] = record.to_dict()
+        try:
+            self._persist()
+        except Exception:
+            self._user[category_id] = current.to_dict()
+            raise
+        return dict(self._user[category_id])
+
+    def _update_seed_category(self, category_id, *, name=UNSET, prefix=UNSET,
+                              sap_gl_code=UNSET, gl_description=UNSET,
+                              format_template=UNSET, sequence_padding=UNSET,
+                              separator=UNSET) -> dict:
+        """Edit a SHIPPED category; the edit persists as an override.
+
+        The seed table is never written: the edited record is stored in
+        the writable registry file and merged over the derived seed
+        record on every read, keeping the stable ``category_id`` and the
+        ``seed`` source. Validation mirrors a user-category edit — the
+        name must not collide with another seed or user category, and
+        the prefix must be well-formed and unique across the registry.
+        """
+        seed = self._seed_categories()
+        current = seed[category_id]
+
+        if name is UNSET:
+            text_name = current.category_name
+        else:
+            text_name = _validate_name(name)
+            folded = text_name.casefold()
+            slug = _slugify(text_name)
+            for key in sorted(seed):
+                if key == category_id:
+                    continue
+                if (folded == seed[key].category_name.casefold()
+                        or slug == key):
+                    raise ValidationError(
+                        f"Category {text_name!r} would shadow seed category "
+                        f"{seed[key].category_name!r}; choose a different "
+                        f"name")
+            for key in sorted(self._user):
+                if (self._user[key].get("category_name", "").casefold()
+                        == folded):
+                    raise ValidationError(
+                        f"Category {text_name!r} already exists in the user "
+                        f"registry")
+
+        if prefix is UNSET:
+            prefix_clean = current.prefix
+        else:
+            prefix_clean = str(prefix or "").strip().upper()
+            if prefix_clean:
+                if not PREFIX_RE.match(prefix_clean):
+                    raise ValidationError(
+                        f"Category prefix {prefix_clean!r} must be 1-8 "
+                        f"uppercase alphanumeric characters")
+                existing = self.get_category_by_prefix(prefix_clean)
+                # The category's OWN prefix is not a collision — only
+                # another category holding it blocks the edit.
+                if (existing is not None
+                        and existing.category_id != category_id):
+                    raise ValidationError(
+                        f"Category prefix {prefix_clean!r} is already used by "
+                        f"category {existing.category_id!r}")
+
+        record = CategoryRecord(
+            category_id=category_id,
+            category_name=text_name,
+            prefix=prefix_clean,
+            sap_gl_code=(current.sap_gl_code if sap_gl_code is UNSET
+                         else str(sap_gl_code or "").strip()
+                         or NEEDS_VERIFICATION),
+            gl_description=(current.gl_description if gl_description is UNSET
+                            else str(gl_description or "").strip()
+                            or NEEDS_VERIFICATION),
+            format_template=(current.format_template
+                             if format_template is UNSET
+                             else format_template),
+            sequence_padding=(current.sequence_padding
+                              if sequence_padding is UNSET
+                              else sequence_padding),
+            separator=(current.separator if separator is UNSET
+                       else separator),
+            source="seed",
+        )
+        # CategoryRecord.__post_init__ already rejected a malformed
+        # prefix/padding/separator; validate the name so a bad edit is
+        # caught before anything is written.
+        _validate_name(record.category_name)
+        override = {key: value for key, value in record.to_dict().items()
+                    if key != "source"}
+        snapshot = dict(self._overrides)
+        self._overrides[category_id] = override
+        try:
+            self._persist()
+        except Exception:
+            self._overrides = snapshot
             raise
         return record.to_dict()
 

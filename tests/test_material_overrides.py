@@ -441,6 +441,85 @@ def test_r_material_dialog_writes_only_the_override_store(tmp_path):
         "Portland Cement 32.5N")
 
 
+def test_r_material_dialog_binding_fields_editable(tmp_path):
+    """Prefix / SAP-GL / GL Description are plain editable entries. A
+    change saves back to the CATEGORY the material points at (an
+    override for a seed category), never to the material record and
+    never to the shipped seed table."""
+    from qs_engine.ui import views
+    before = _hashes()
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    captured = {}
+    app = _app_or_skip(stack.resolver)
+    app.update_idletasks()
+    try:
+        handle = views.material_editor_dialog(
+            app, on_saved=lambda rec: captured.update(rec))
+        assert handle is not None
+        # editable entries, not a read-only auto-fill
+        for key in ("prefix", "gl_code", "gl_description"):
+            assert str(handle[key].cget("state")) != "readonly"
+        handle["name"].insert(0, "Test Aggregate")
+        handle["code"].delete(0, "end")
+        handle["code"].insert(0, "AGX-001")
+        handle["category"].set("aggregate")
+        handle["unit"].set("bag")
+        # edit the seed category's binding through the material dialog
+        handle["prefix"].delete(0, "end")
+        handle["prefix"].insert(0, "agx")   # normalised to AGX
+        handle["gl_code"].delete(0, "end")
+        handle["gl_code"].insert(0, "10999")
+        handle["gl_description"].delete(0, "end")
+        handle["gl_description"].insert(0, "Inventory Account - Aggregates")
+        handle["save"].invoke()
+        app.update()
+        assert handle["result"] is not None
+        # the page callback receives the note; the DTO stays clean
+        assert captured.get("_category_note")
+        assert "_category_note" not in handle["result"]
+    finally:
+        app.destroy()
+    assert _hashes() == before, "UI run modified a seed table"
+    # the seed CATEGORY carries the edit through a fresh read
+    again = build_material_stack(MasterDataRepository(), tmp_path)
+    cat = again.registry.get_category("aggregate")
+    assert cat.prefix == "AGX"
+    assert cat.sap_gl_code == "10999"
+    assert cat.gl_description == "Inventory Account - Aggregates"
+    assert cat.source == "seed"
+    # the material itself stored identifiers only — no GL on the row
+    record = again.resolver.get("materials", "AGX-001")
+    assert record["name"] == "Test Aggregate"
+    assert record["category"] == "aggregate"
+
+
+def test_r_material_dialog_plain_save_does_not_rewrite_the_category(tmp_path):
+    """Without a binding edit, saving a material leaves the category
+    registry file alone — no spurious override for an untouched seed."""
+    from qs_engine.ui import views
+    before = _hashes()
+    stack = build_material_stack(MasterDataRepository(), tmp_path)
+    registry_file = tmp_path / "user_categories.json"
+    app = _app_or_skip(stack.resolver)
+    app.update_idletasks()
+    try:
+        handle = views.material_editor_dialog(app)
+        assert handle is not None
+        handle["name"].insert(0, "Plain Save")
+        handle["code"].delete(0, "end")
+        handle["code"].insert(0, "PLAIN-001")
+        handle["category"].set("aggregate")
+        handle["unit"].set("bag")
+        handle["save"].invoke()
+        app.update()
+        assert handle["result"] is not None
+        assert "_category_note" not in handle["result"]
+    finally:
+        app.destroy()
+    assert _hashes() == before
+    assert not registry_file.exists(), "plain save wrote the registry"
+
+
 # --- acceptance workflow (spec section 12) -----------------------------------------
 
 def test_acceptance_material_override_workflow(tmp_path):
