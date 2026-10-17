@@ -1,5 +1,5 @@
 import os, re, shutil, difflib
-src = r'E:\Documents\VS\CIVOLINK\CIVOLINK_QS_ESTIMATING_ENGINE'
+src = r'E:\Documents\VS\CIVOLINK_QS_ESTIMATING_ENGINE'
 tmp = os.path.join(os.environ['TEMP'], 'opencode')
 after_dir = os.path.join(tmp, 'after_mix_design')
 before_dir = os.path.join(tmp, 'before_mix_design')
